@@ -1,0 +1,31 @@
+# Environment
+.env
+
+# Node
+node_modules/
+dist/
+.angular/
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+
+# Python
+__pycache__/
+*.pyc
+*.vtt
+pipeline/raw/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+
+# Docker
+pgdata/
+
+# OS
+Thumbs.db
+.DS_Store
