@@ -18,7 +18,7 @@ Two data ingestion paths:
 | Frontend | React 19 + TypeScript (Vite, React Router, Tailwind CSS) |
 | Backend | C# / ASP.NET Core 8 Web API |
 | Database | PostgreSQL (Docker) |
-| Pipeline | Pure C# — yt-dlp binary for downloads, CMU Pronouncing Dict bundled as embedded resource |
+| Pipeline | Pure C# — yt-dlp binary for downloads, OpenAI API for LLM extraction |
 | Dev Tools | Playwright MCP (frontend dev loop), `/frontend-design` skill (UI design) |
 
 **No:** audio, metronome, beats, recording, stats, streaks, category filters, Python, Supabase.
@@ -29,6 +29,7 @@ Two data ingestion paths:
 
 - [x] **Docker Desktop for Windows** — installed
 - [x] **.NET SDK 8** — installed
+- [x] **OpenAI API key** — add to `.env` as `OPENAI_API_KEY`
 - [ ] **Playwright MCP** — add to `~/.claude/settings.json`
 
 Everything else (PostgreSQL, Node) runs inside Docker containers.
@@ -100,22 +101,26 @@ CREATE TABLE sessions (
 [React Frontend :5173]  ←→  [C# ASP.NET API :5000]  ←→  [PostgreSQL :5432]
                                       ↓
                             [C# PipelineService]
-                                   ↙   ↘
-                         [transcripts/]  [yt-dlp binary]
-                         (.txt files)    (YouTube URL → VTT)
+                               ↙           ↘
+                    [TranscriptParser]   [yt-dlp binary]
+                          ↓              (YouTube URL → VTT)
+                    [LlmExtractor]
+                    (OpenAI API — batch bars, get structured JSON back)
+                          ↓
+                    [PostgreSQL upsert]
 ```
 
 **Local transcript flow:**
 1. User drops `.txt` files into `transcripts/` directory (gitignored, mounted into container)
 2. User clicks "Parse Transcripts" button in the Pipeline page
-3. C# API scans `transcripts/` → `TranscriptParser` processes each unprocessed file
-4. Extracts bars → openers + rhymes → upserts into PostgreSQL
-5. File marked as processed (tracked in `videos` table by filename)
+3. C# API scans `transcripts/` → `TranscriptParser` reads structural format → raw timestamped lines
+4. `LlmExtractor` sends batches of lines to OpenAI → structured bar data back
+5. Upsert into PostgreSQL; file marked processed
 
 **YouTube URL flow:**
 1. User pastes YouTube URL in Pipeline page → clicks "Process"
 2. C# API runs `yt-dlp` binary → downloads `.vtt` subtitle file
-3. `TranscriptParser` parses VTT → bars; `PatternExtractor` extracts openers + rhymes
+3. `TranscriptParser` parses VTT → raw lines; `LlmExtractor` extracts patterns
 4. Results upserted into PostgreSQL
 
 ---
@@ -125,7 +130,8 @@ CREATE TABLE sessions (
 ```
 harry-mack-freestyle-flashcards/
 ├── docker-compose.yml
-├── .env
+├── .env                               # DB creds + OPENAI_API_KEY
+├── .env.example
 ├── transcripts/                       # gitignored — drop .txt files here
 │   └── .gitkeep
 ├── backend/
@@ -133,19 +139,19 @@ harry-mack-freestyle-flashcards/
 │   └── HarryMack.Api/
 │       ├── Program.cs
 │       ├── appsettings.json
-│       ├── Resources/
-│       │   └── cmudict.dict           # CMU Pronouncing Dictionary (embedded resource)
 │       ├── Controllers/
 │       │   ├── PipelineController.cs  # POST /process-url, POST /parse-local, GET /status
 │       │   ├── OpenersController.cs
 │       │   ├── RhymesController.cs
 │       │   └── SessionsController.cs
 │       ├── Services/
-│       │   ├── PipelineService.cs     # Orchestrates download + parse + extract + upsert
-│       │   ├── TranscriptParser.cs    # .txt / VTT → bars
-│       │   ├── PatternExtractor.cs    # bars → openers + rhymes (CMU dict lookup)
-│       │   └── CmuDictService.cs      # Loads cmudict.dict, exposes phoneme + rhyme lookup
+│       │   ├── PipelineService.cs     # Orchestrates parse → LLM extract → upsert
+│       │   ├── TranscriptParser.cs    # Structural parsing: .txt / VTT → raw lines
+│       │   └── LlmExtractor.cs        # OpenAI batch call → structured bar JSON
 │       └── Models/
+│           ├── Bar.cs
+│           ├── ExtractedBar.cs        # LLM output shape
+│           └── RhymeMap.cs
 ├── frontend/
 │   ├── Dockerfile                     # Node 20 + Vite
 │   ├── vite.config.ts
@@ -172,45 +178,87 @@ harry-mack-freestyle-flashcards/
 
 ## C# Pipeline — Key Services
 
-### CmuDictService
-- Loads `cmudict.dict` from embedded resource at startup
-- Parses into `Dictionary<string, string[]>` (word → phoneme array)
-- `GetPhonemes(word)` → phoneme array
-- `GetRhymeKey(word)` → suffix starting from last stressed vowel phoneme (same as Python `pronouncing` rhyme logic)
-- `FindRhymes(word)` → all words sharing the same rhyme key
-
 ### TranscriptParser
 - **Local `.txt`**: detect `[FREESTYLE - "..."]` section markers, extract `[timestamp] bar text` lines
-- **VTT**: strip timing/cue headers, deduplicate overlapping caption lines, reassemble into bars
-- Filter out conversation lines (heuristic: short lines, no end-rhyme potential, no rhythm markers)
-- Output: `List<Bar>` with text + timestamp
+- **VTT**: strip timing/cue headers, deduplicate overlapping caption lines, reassemble into lines
+- Output: `List<RawLine>` with text + timestamp — no semantic processing here
 
-### PatternExtractor
-- **Openers**: first 3–8 words of each bar, normalized (lowercase, stripped punctuation), fuzzy-deduplicated by Levenshtein distance
-- **Rhymes**: extract end word of each bar → lookup phonemes → compute rhyme key → group bars that share rhyme key into pairs
+### LlmExtractor
+Sends batches of raw lines to OpenAI (gpt-4o-mini for cost, gpt-4o for quality if needed).
+
+**Prompt (system):**
+```
+You are a freestyle rap analyst. Given raw timestamped lines from a Harry Mack freestyle rap transcript,
+classify each line and extract patterns. Return a JSON array — one object per line.
+```
+
+**Prompt (user):**
+```
+Lines:
+[0:35] I was born in a world where the people don't care
+[0:38] I'ma take it to the top, got my hands in the air
+[0:40] Yeah
+[0:41] What's your name bro?
+
+Return JSON array:
+[
+  {
+    "index": 0,
+    "is_freestyle": true,
+    "opener": "I was born in a world",
+    "rhyme_word": "care",
+    "rhyme_key": "EH R"
+  },
+  ...
+]
+
+Rules:
+- is_freestyle: true only for actual rap bars (has rhythm, rhyme intent, lyrical structure). False for filler ("Yeah", "Uh"), conversation, or questions.
+- opener: first 3–7 words of the bar that form a natural sentence start. Exclude trailing filler.
+- rhyme_word: the word at the end of the bar that carries the rhyme. Usually the last meaningful word.
+- rhyme_key: phonetic rhyme group — the vowel + consonant suffix sound that groups this word with its rhymes (e.g. "EH R" groups care/air/there/bear). Use ARPABET notation.
+```
+
+**Batching:** 20–30 lines per API call to minimize cost.
+
+**Output model (`ExtractedBar`):**
+```csharp
+record ExtractedBar(
+    int Index,
+    bool IsFreestyle,
+    string Opener,
+    string RhymeWord,
+    string RhymeKey
+);
+```
 
 ### PipelineService
-- Receives source (URL or filepath)
-- For YouTube: `Process.Start("yt-dlp", "--write-auto-sub --sub-lang en --skip-download --sub-format vtt ...")`
-- Calls `TranscriptParser` → `PatternExtractor`
-- Upserts `videos`, `bars`, `openers`, `opener_sources`, `rhyme_words`, `rhyme_pairs` via Npgsql
+1. `TranscriptParser.Parse(source)` → `List<RawLine>`
+2. `LlmExtractor.ExtractAsync(lines)` → `List<ExtractedBar>`
+3. Filter to `IsFreestyle == true`
+4. Upsert via Npgsql:
+   - `videos` row (source + title)
+   - `bars` rows (full text + timestamp)
+   - `openers` rows (upsert by text, increment frequency)
+   - `opener_sources` rows (opener ↔ bar)
+   - `rhyme_words` rows (upsert by word, increment frequency)
+   - `rhyme_pairs` rows (bars sharing same `rhyme_key` within same video = pair)
 
 ---
 
 ## NuGet Packages
-- `Npgsql` — direct PostgreSQL access (no EF Core overhead needed)
+- `Npgsql` — direct PostgreSQL access
+- `OpenAI` — official OpenAI .NET client (v2.x)
 - `Microsoft.AspNetCore.Cors` — CORS for React dev server
-
-CMU Pronouncing Dictionary (`cmudict.dict`) bundled as embedded resource — no external package needed.
 
 ---
 
 ## API Endpoints
 
 | Endpoint | Method | Purpose |
-|----------|--------|---------:|
-| `/api/pipeline/process-url` | POST | `{ url }` → yt-dlp download + parse |
-| `/api/pipeline/parse-local` | POST | Scan `transcripts/` dir + parse all new `.txt` files |
+|----------|--------|---------|
+| `/api/pipeline/process-url` | POST | `{ url }` → yt-dlp download + LLM parse |
+| `/api/pipeline/parse-local` | POST | Scan `transcripts/` dir + LLM parse all new `.txt` files |
 | `/api/pipeline/status` | GET | List all processed sources (local + YouTube) |
 | `/api/openers` | GET | List all openers (paginated) |
 | `/api/openers/random` | GET | Single random opener for flashcard |
@@ -245,7 +293,7 @@ Two sections:
 **Local Transcripts**
 - Shows count of `.txt` files found in `transcripts/` directory
 - "Parse Transcripts" button → calls `POST /api/pipeline/parse-local`
-- Progress indicator during parsing
+- Progress indicator during parsing (LLM calls take a few seconds)
 - List of already-parsed local files
 
 **YouTube URL**
@@ -267,18 +315,22 @@ Two sections:
 [1:41] next bar
 ```
 
-Only `[FREESTYLE - ...]` sections are parsed into bars. Conversation lines are filtered.
+`TranscriptParser` extracts lines inside `[FREESTYLE - ...]` sections. The LLM then decides which are actual bars vs. filler.
 
 ---
 
 ## Getting Started
 
 ```bash
-# 1. Drop your .txt transcript files into transcripts/
-# 2. Start everything
+# 1. Add your OpenAI API key to .env
+echo "OPENAI_API_KEY=sk-your-key-here" >> .env
+
+# 2. Drop your .txt transcript files into transcripts/
+
+# 3. Start everything
 docker compose up --build
 
-# 3. Open the app and click "Parse Transcripts" on the Pipeline page
+# 4. Open the app and click "Parse Transcripts" on the Pipeline page
 ```
 
 - Frontend: http://localhost:5173
