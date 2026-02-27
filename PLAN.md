@@ -18,10 +18,10 @@ Two data ingestion paths:
 | Frontend | React 19 + TypeScript (Vite, React Router, Tailwind CSS) |
 | Backend | C# / ASP.NET Core 8 Web API |
 | Database | PostgreSQL (Docker) |
-| Pipeline | Python (yt-dlp + transcript parsing) invoked from C# backend |
+| Pipeline | Pure C# — yt-dlp binary for downloads, CMU Pronouncing Dict bundled as embedded resource |
 | Dev Tools | Playwright MCP (frontend dev loop), `/frontend-design` skill (UI design) |
 
-**No:** audio, metronome, beats, recording, stats, streaks, category filters, Supabase.
+**No:** audio, metronome, beats, recording, stats, streaks, category filters, Python, Supabase.
 
 ---
 
@@ -31,7 +31,7 @@ Two data ingestion paths:
 - [x] **.NET SDK 8** — installed
 - [ ] **Playwright MCP** — add to `~/.claude/settings.json`
 
-Everything else (PostgreSQL, Python/yt-dlp, Node) runs inside Docker containers.
+Everything else (PostgreSQL, Node) runs inside Docker containers.
 
 ---
 
@@ -42,10 +42,12 @@ CREATE TABLE videos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     youtube_id TEXT,                        -- null if from local transcript
     title TEXT,
-    source TEXT NOT NULL,                   -- 'local' or 'youtube'
+    source TEXT NOT NULL DEFAULT 'local',   -- 'local' or 'youtube'
     filename TEXT,                          -- original .txt filename if local
     url TEXT,                               -- YouTube URL if from yt-dlp
-    processed_at TIMESTAMPTZ DEFAULT NOW()
+    processed_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (youtube_id),
+    UNIQUE (filename)
 );
 
 CREATE TABLE bars (
@@ -97,23 +99,24 @@ CREATE TABLE sessions (
 ```
 [React Frontend :5173]  ←→  [C# ASP.NET API :5000]  ←→  [PostgreSQL :5432]
                                       ↓
-                            [Python pipeline scripts]
-                                    ↙   ↘
-                         [transcripts/]  [yt-dlp]
-                         (.txt files)    (YouTube URL)
+                            [C# PipelineService]
+                                   ↙   ↘
+                         [transcripts/]  [yt-dlp binary]
+                         (.txt files)    (YouTube URL → VTT)
 ```
 
 **Local transcript flow:**
-1. User drops `.txt` files into `transcripts/` directory (gitignored)
+1. User drops `.txt` files into `transcripts/` directory (gitignored, mounted into container)
 2. User clicks "Parse Transcripts" button in the Pipeline page
-3. C# API scans `transcripts/` → runs `parse_transcript.py` on each unprocessed file
+3. C# API scans `transcripts/` → `TranscriptParser` processes each unprocessed file
 4. Extracts bars → openers + rhymes → upserts into PostgreSQL
 5. File marked as processed (tracked in `videos` table by filename)
 
 **YouTube URL flow:**
 1. User pastes YouTube URL in Pipeline page → clicks "Process"
-2. C# API runs `download_transcript.py` (yt-dlp) → then `parse_transcript.py` → extract
-3. Results upserted into PostgreSQL
+2. C# API runs `yt-dlp` binary → downloads `.vtt` subtitle file
+3. `TranscriptParser` parses VTT → bars; `PatternExtractor` extracts openers + rhymes
+4. Results upserted into PostgreSQL
 
 ---
 
@@ -126,23 +129,23 @@ harry-mack-freestyle-flashcards/
 ├── transcripts/                       # gitignored — drop .txt files here
 │   └── .gitkeep
 ├── backend/
-│   ├── Dockerfile                     # .NET 8 + Python (for pipeline)
+│   ├── Dockerfile                     # .NET 8 + yt-dlp standalone binary
 │   └── HarryMack.Api/
 │       ├── Program.cs
 │       ├── appsettings.json
+│       ├── Resources/
+│       │   └── cmudict.dict           # CMU Pronouncing Dictionary (embedded resource)
 │       ├── Controllers/
 │       │   ├── PipelineController.cs  # POST /process-url, POST /parse-local, GET /status
 │       │   ├── OpenersController.cs
 │       │   ├── RhymesController.cs
 │       │   └── SessionsController.cs
 │       ├── Services/
-│       │   └── PipelineService.cs
+│       │   ├── PipelineService.cs     # Orchestrates download + parse + extract + upsert
+│       │   ├── TranscriptParser.cs    # .txt / VTT → bars
+│       │   ├── PatternExtractor.cs    # bars → openers + rhymes (CMU dict lookup)
+│       │   └── CmuDictService.cs      # Loads cmudict.dict, exposes phoneme + rhyme lookup
 │       └── Models/
-├── pipeline/
-│   ├── requirements.txt               # yt-dlp, webvtt-py, pronouncing
-│   ├── download_transcript.py         # YouTube URL → VTT file
-│   ├── parse_transcript.py            # .txt or VTT → bars JSON
-│   └── extract_patterns.py            # bars → openers + rhymes JSON
 ├── frontend/
 │   ├── Dockerfile                     # Node 20 + Vite
 │   ├── vite.config.ts
@@ -167,10 +170,45 @@ harry-mack-freestyle-flashcards/
 
 ---
 
+## C# Pipeline — Key Services
+
+### CmuDictService
+- Loads `cmudict.dict` from embedded resource at startup
+- Parses into `Dictionary<string, string[]>` (word → phoneme array)
+- `GetPhonemes(word)` → phoneme array
+- `GetRhymeKey(word)` → suffix starting from last stressed vowel phoneme (same as Python `pronouncing` rhyme logic)
+- `FindRhymes(word)` → all words sharing the same rhyme key
+
+### TranscriptParser
+- **Local `.txt`**: detect `[FREESTYLE - "..."]` section markers, extract `[timestamp] bar text` lines
+- **VTT**: strip timing/cue headers, deduplicate overlapping caption lines, reassemble into bars
+- Filter out conversation lines (heuristic: short lines, no end-rhyme potential, no rhythm markers)
+- Output: `List<Bar>` with text + timestamp
+
+### PatternExtractor
+- **Openers**: first 3–8 words of each bar, normalized (lowercase, stripped punctuation), fuzzy-deduplicated by Levenshtein distance
+- **Rhymes**: extract end word of each bar → lookup phonemes → compute rhyme key → group bars that share rhyme key into pairs
+
+### PipelineService
+- Receives source (URL or filepath)
+- For YouTube: `Process.Start("yt-dlp", "--write-auto-sub --sub-lang en --skip-download --sub-format vtt ...")`
+- Calls `TranscriptParser` → `PatternExtractor`
+- Upserts `videos`, `bars`, `openers`, `opener_sources`, `rhyme_words`, `rhyme_pairs` via Npgsql
+
+---
+
+## NuGet Packages
+- `Npgsql` — direct PostgreSQL access (no EF Core overhead needed)
+- `Microsoft.AspNetCore.Cors` — CORS for React dev server
+
+CMU Pronouncing Dictionary (`cmudict.dict`) bundled as embedded resource — no external package needed.
+
+---
+
 ## API Endpoints
 
 | Endpoint | Method | Purpose |
-|----------|--------|---------|
+|----------|--------|---------:|
 | `/api/pipeline/process-url` | POST | `{ url }` → yt-dlp download + parse |
 | `/api/pipeline/parse-local` | POST | Scan `transcripts/` dir + parse all new `.txt` files |
 | `/api/pipeline/status` | GET | List all processed sources (local + YouTube) |
@@ -221,8 +259,6 @@ Two sections:
 
 ## Transcript Format (`.txt` files)
 
-The parser will handle the same format as `transcript.txt` already in the repo:
-
 ```
 --- SEGMENT 1: Topic label ---
 
@@ -231,7 +267,7 @@ The parser will handle the same format as `transcript.txt` already in the repo:
 [1:41] next bar
 ```
 
-Conversation lines (short, no rhythm) are automatically filtered out. Only `[FREESTYLE - ...]` sections are parsed into bars.
+Only `[FREESTYLE - ...]` sections are parsed into bars. Conversation lines are filtered.
 
 ---
 
