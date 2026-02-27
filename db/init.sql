@@ -2,10 +2,14 @@
 
 CREATE TABLE videos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    youtube_id TEXT UNIQUE NOT NULL,
+    youtube_id TEXT,                        -- null if from local transcript
     title TEXT,
-    url TEXT NOT NULL,
-    processed_at TIMESTAMPTZ DEFAULT NOW()
+    source TEXT NOT NULL DEFAULT 'local',   -- 'local' or 'youtube'
+    filename TEXT,                          -- original .txt filename if local
+    url TEXT,                               -- YouTube URL if from yt-dlp
+    processed_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (youtube_id),
+    UNIQUE (filename)
 );
 
 CREATE TABLE bars (

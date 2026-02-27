@@ -1,10 +1,12 @@
 # Environment
 .env
 
+# Transcripts (local files, not committed)
+transcripts/*.txt
+
 # Node
 node_modules/
 dist/
-.angular/
 
 # .NET
 bin/

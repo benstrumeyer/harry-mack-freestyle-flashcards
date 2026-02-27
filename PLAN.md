@@ -1,7 +1,11 @@
 # Harry Mack Freestyle Flashcards
 
 ## Context
-Freestyle rap training app. Extract patterns from Harry Mack's YouTube freestyles — opener sentences and rhyme dictionaries — persist to PostgreSQL. One-card flashcard UI for drilling openers. Browsable dictionaries with a visual word map for rhymes. Web-based pipeline page to feed YouTube URLs for processing.
+Freestyle rap training app. Extract patterns from Harry Mack's YouTube freestyles — opener sentences and rhyme dictionaries — persist to PostgreSQL. One-card flashcard UI for drilling openers. Browsable dictionaries with a visual word map for rhymes.
+
+Two data ingestion paths:
+1. **Local transcripts** — drop `.txt` files into `transcripts/` directory, click "Parse Transcripts" in the UI
+2. **YouTube URL** — paste a URL in the pipeline page, yt-dlp downloads + processes it automatically
 
 ## Project: `c:\Users\Gojo\repos\harry-mack-freestyle-flashcards\`
 
@@ -36,9 +40,11 @@ Everything else (PostgreSQL, Python/yt-dlp, Node) runs inside Docker containers.
 ```sql
 CREATE TABLE videos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    youtube_id TEXT UNIQUE NOT NULL,
+    youtube_id TEXT,                        -- null if from local transcript
     title TEXT,
-    url TEXT NOT NULL,
+    source TEXT NOT NULL,                   -- 'local' or 'youtube'
+    filename TEXT,                          -- original .txt filename if local
+    url TEXT,                               -- YouTube URL if from yt-dlp
     processed_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -92,15 +98,22 @@ CREATE TABLE sessions (
 [React Frontend :5173]  ←→  [C# ASP.NET API :5000]  ←→  [PostgreSQL :5432]
                                       ↓
                             [Python pipeline scripts]
-                                      ↓
-                            [yt-dlp → parse → extract]
+                                    ↙   ↘
+                         [transcripts/]  [yt-dlp]
+                         (.txt files)    (YouTube URL)
 ```
 
-**Flow:**
-1. User pastes YouTube URL in web UI → hits "Process"
-2. C# API invokes Python pipeline (yt-dlp → parse transcript → extract bars → extract openers + rhymes)
-3. Results persisted to PostgreSQL
-4. Frontend reads from PostgreSQL via C# API
+**Local transcript flow:**
+1. User drops `.txt` files into `transcripts/` directory (gitignored)
+2. User clicks "Parse Transcripts" button in the Pipeline page
+3. C# API scans `transcripts/` → runs `parse_transcript.py` on each unprocessed file
+4. Extracts bars → openers + rhymes → upserts into PostgreSQL
+5. File marked as processed (tracked in `videos` table by filename)
+
+**YouTube URL flow:**
+1. User pastes YouTube URL in Pipeline page → clicks "Process"
+2. C# API runs `download_transcript.py` (yt-dlp) → then `parse_transcript.py` → extract
+3. Results upserted into PostgreSQL
 
 ---
 
@@ -110,13 +123,15 @@ CREATE TABLE sessions (
 harry-mack-freestyle-flashcards/
 ├── docker-compose.yml
 ├── .env
+├── transcripts/                       # gitignored — drop .txt files here
+│   └── .gitkeep
 ├── backend/
 │   ├── Dockerfile                     # .NET 8 + Python (for pipeline)
 │   └── HarryMack.Api/
 │       ├── Program.cs
 │       ├── appsettings.json
 │       ├── Controllers/
-│       │   ├── PipelineController.cs
+│       │   ├── PipelineController.cs  # POST /process-url, POST /parse-local, GET /status
 │       │   ├── OpenersController.cs
 │       │   ├── RhymesController.cs
 │       │   └── SessionsController.cs
@@ -125,9 +140,9 @@ harry-mack-freestyle-flashcards/
 │       └── Models/
 ├── pipeline/
 │   ├── requirements.txt               # yt-dlp, webvtt-py, pronouncing
-│   ├── download_transcript.py
-│   ├── parse_transcript.py
-│   └── extract_patterns.py
+│   ├── download_transcript.py         # YouTube URL → VTT file
+│   ├── parse_transcript.py            # .txt or VTT → bars JSON
+│   └── extract_patterns.py            # bars → openers + rhymes JSON
 ├── frontend/
 │   ├── Dockerfile                     # Node 20 + Vite
 │   ├── vite.config.ts
@@ -156,7 +171,9 @@ harry-mack-freestyle-flashcards/
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/pipeline/process` | POST | `{ url: "youtube.com/..." }` → run pipeline |
+| `/api/pipeline/process-url` | POST | `{ url }` → yt-dlp download + parse |
+| `/api/pipeline/parse-local` | POST | Scan `transcripts/` dir + parse all new `.txt` files |
+| `/api/pipeline/status` | GET | List all processed sources (local + YouTube) |
 | `/api/openers` | GET | List all openers (paginated) |
 | `/api/openers/random` | GET | Single random opener for flashcard |
 | `/api/rhymes` | GET | List all rhyme words |
@@ -164,7 +181,6 @@ harry-mack-freestyle-flashcards/
 | `/api/rhymes/map` | GET | Full graph data: nodes + edges for word map |
 | `/api/sessions` | POST | Save session (array of opener IDs shown) |
 | `/api/sessions` | GET | List past sessions |
-| `/api/videos` | GET | List processed videos |
 
 ---
 
@@ -176,7 +192,7 @@ harry-mack-freestyle-flashcards/
 - Tap anywhere → next random card.
 - **Mode toggle** switches to Rhyme mode (random rhyme words).
 - History button (top-right) → modal with past sessions.
-- Empty state when no data: "Add videos via Pipeline to start"
+- Empty state when no data: "Add transcripts or YouTube URLs via Pipeline"
 
 ### Opener Dictionary (`/openers`)
 - Scrollable list, search bar, tap to expand example completions.
@@ -186,17 +202,47 @@ harry-mack-freestyle-flashcards/
 - **Word Map** — d3-force graph: nodes = words, edges = "rhymed together", zoomable.
 
 ### Pipeline Page (`/pipeline`)
-- URL input + "Process" button. Status indicator. List of processed videos.
+Two sections:
+
+**Local Transcripts**
+- Shows count of `.txt` files found in `transcripts/` directory
+- "Parse Transcripts" button → calls `POST /api/pipeline/parse-local`
+- Progress indicator during parsing
+- List of already-parsed local files
+
+**YouTube URL**
+- URL input + "Process" button → calls `POST /api/pipeline/process-url`
+- Status indicator
 
 ### History Modal
 - Past sessions: date, card count, expandable list of openers.
 
 ---
 
+## Transcript Format (`.txt` files)
+
+The parser will handle the same format as `transcript.txt` already in the repo:
+
+```
+--- SEGMENT 1: Topic label ---
+
+[FREESTYLE - "Topic"]
+[1:35] bar text here / second part of bar
+[1:41] next bar
+```
+
+Conversation lines (short, no rhythm) are automatically filtered out. Only `[FREESTYLE - ...]` sections are parsed into bars.
+
+---
+
 ## Getting Started
 
 ```bash
+# 1. Drop your .txt transcript files into transcripts/
+# 2. Start everything
 docker compose up --build
+
+# 3. Open the app and click "Parse Transcripts" on the Pipeline page
 ```
 
 - Frontend: http://localhost:5173
