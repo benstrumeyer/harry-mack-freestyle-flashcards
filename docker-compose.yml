@@ -32,7 +32,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "4200:4200"
+      - "5173:5173"
     volumes:
       - ./frontend/src:/app/src
     depends_on:

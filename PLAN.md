@@ -11,7 +11,7 @@ Freestyle rap training app. Extract patterns from Harry Mack's YouTube freestyle
 
 | Layer | Tech |
 |-------|------|
-| Frontend | Angular 19 + TypeScript (standalone components, Tailwind CSS) |
+| Frontend | React 19 + TypeScript (Vite, React Router, Tailwind CSS) |
 | Backend | C# / ASP.NET Core 8 Web API |
 | Database | PostgreSQL (Docker) |
 | Pipeline | Python (yt-dlp + transcript parsing) invoked from C# backend |
@@ -23,10 +23,11 @@ Freestyle rap training app. Extract patterns from Harry Mack's YouTube freestyle
 
 ## Prerequisites
 
-- [ ] **Docker Desktop for Windows** — required for everything
-- [ ] **Playwright MCP** — for frontend dev loop
+- [x] **Docker Desktop for Windows** — installed
+- [x] **.NET SDK 8** — installed
+- [ ] **Playwright MCP** — add to `~/.claude/settings.json`
 
-Everything else (.NET SDK, PostgreSQL, Python/yt-dlp, Angular CLI, Node) runs inside Docker containers.
+Everything else (PostgreSQL, Python/yt-dlp, Node) runs inside Docker containers.
 
 ---
 
@@ -88,11 +89,11 @@ CREATE TABLE sessions (
 ## Architecture
 
 ```
-[Angular Frontend :4200]  ←→  [C# ASP.NET API :5000]  ←→  [PostgreSQL :5432]
-                                       ↓
-                             [Python pipeline scripts]
-                                       ↓
-                             [yt-dlp → parse → extract]
+[React Frontend :5173]  ←→  [C# ASP.NET API :5000]  ←→  [PostgreSQL :5432]
+                                      ↓
+                            [Python pipeline scripts]
+                                      ↓
+                            [yt-dlp → parse → extract]
 ```
 
 **Flow:**
@@ -100,6 +101,54 @@ CREATE TABLE sessions (
 2. C# API invokes Python pipeline (yt-dlp → parse transcript → extract bars → extract openers + rhymes)
 3. Results persisted to PostgreSQL
 4. Frontend reads from PostgreSQL via C# API
+
+---
+
+## Project Structure
+
+```
+harry-mack-freestyle-flashcards/
+├── docker-compose.yml
+├── .env
+├── backend/
+│   ├── Dockerfile                     # .NET 8 + Python (for pipeline)
+│   └── HarryMack.Api/
+│       ├── Program.cs
+│       ├── appsettings.json
+│       ├── Controllers/
+│       │   ├── PipelineController.cs
+│       │   ├── OpenersController.cs
+│       │   ├── RhymesController.cs
+│       │   └── SessionsController.cs
+│       ├── Services/
+│       │   └── PipelineService.cs
+│       └── Models/
+├── pipeline/
+│   ├── requirements.txt               # yt-dlp, webvtt-py, pronouncing
+│   ├── download_transcript.py
+│   ├── parse_transcript.py
+│   └── extract_patterns.py
+├── frontend/
+│   ├── Dockerfile                     # Node 20 + Vite
+│   ├── vite.config.ts
+│   ├── package.json
+│   └── src/
+│       ├── main.tsx
+│       ├── App.tsx                    # React Router setup
+│       ├── pages/
+│       │   ├── FlashcardPage.tsx      # THE card — tap to advance
+│       │   ├── OpenerDictionaryPage.tsx
+│       │   ├── RhymeDictionaryPage.tsx
+│       │   └── PipelinePage.tsx
+│       ├── components/
+│       │   ├── WordMap.tsx            # d3-force graph
+│       │   └── HistoryModal.tsx
+│       └── services/
+│           └── api.ts
+├── db/
+│   └── init.sql
+└── PLAN.md
+```
 
 ---
 
@@ -150,6 +199,6 @@ CREATE TABLE sessions (
 docker compose up --build
 ```
 
-- Frontend: http://localhost:4200
+- Frontend: http://localhost:5173
 - Backend API: http://localhost:5000
 - PostgreSQL: localhost:5432
