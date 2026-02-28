@@ -22,7 +22,7 @@ services:
       - "5000:8080"
     environment:
       ConnectionStrings__Default: "Host=db;Database=harrymack;Username=${DB_USER:-harrymack};Password=${DB_PASSWORD:-dev}"
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
     volumes:
       - ./transcripts:/app/transcripts
     depends_on:
@@ -32,7 +32,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "5173:5173"
+      - "5190:5173"
     volumes:
       - ./frontend/src:/app/src
     depends_on:

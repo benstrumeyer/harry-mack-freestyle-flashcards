@@ -47,8 +47,21 @@ CREATE TABLE rhyme_pairs (
     PRIMARY KEY (word_a_id, word_b_id)
 );
 
+CREATE TABLE rhyme_word_bars (
+    word_id UUID REFERENCES rhyme_words(id) ON DELETE CASCADE,
+    bar_id UUID REFERENCES bars(id) ON DELETE CASCADE,
+    PRIMARY KEY (word_id, bar_id)
+);
+
 CREATE TABLE sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     started_at TIMESTAMPTZ DEFAULT NOW(),
     cards_shown UUID[]
+);
+
+CREATE TABLE saved_openers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    opener_id UUID REFERENCES openers(id) ON DELETE SET NULL,
+    text TEXT NOT NULL,
+    saved_at TIMESTAMPTZ DEFAULT NOW()
 );
