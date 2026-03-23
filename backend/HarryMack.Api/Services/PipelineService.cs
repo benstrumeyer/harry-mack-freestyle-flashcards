@@ -388,7 +388,7 @@ public class PipelineService
             foreach (var bar in extractedBars)
             {
                 lineByIndex.TryGetValue(bar.Index, out var rawLine);
-                var barText = rawLine?.Text ?? "";
+                var barText = !string.IsNullOrWhiteSpace(bar.BarText) ? bar.BarText : rawLine?.Text ?? "";
                 float? ts = rawLine?.TimestampSeconds;
 
                 Guid barId;
@@ -405,7 +405,8 @@ public class PipelineService
                     barId = (Guid)(await cmd.ExecuteScalarAsync())!;
                 }
 
-                if (!string.IsNullOrWhiteSpace(bar.Opener))
+                if (!string.IsNullOrWhiteSpace(bar.Opener)
+                    && barText.StartsWith(bar.Opener, StringComparison.OrdinalIgnoreCase))
                 {
                     var openerText = bar.Opener.Trim().ToLowerInvariant();
                     Guid openerId;
