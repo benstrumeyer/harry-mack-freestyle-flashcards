@@ -21,27 +21,13 @@ public class LlmExtractor
         _logger = logger;
     }
 
-    private const int BatchSize = 15; // keep batches small so LLM output doesn't get truncated
-
     public async Task<List<ExtractedBar>> ExtractAsync(List<RawLine> lines)
     {
-        var results = new List<ExtractedBar>();
-        for (int i = 0; i < lines.Count; i += BatchSize)
-        {
-            var batch = lines.Skip(i).Take(BatchSize).ToList();
-            _logger.LogInformation("Extracting batch {start}-{end} of {total}", i, Math.Min(i + BatchSize, lines.Count), lines.Count);
-            var extracted = await ExtractBatchAsync(batch);
-            results.AddRange(extracted);
-        }
-        return results;
-    }
-
-    private async Task<List<ExtractedBar>> ExtractBatchAsync(List<RawLine> batch)
-    {
+        _logger.LogInformation("Extracting {count} lines in single LLM call", lines.Count);
         await _llmSem.WaitAsync();
         try
         {
-            var linesText = string.Join("\n", batch.Select(l =>
+            var linesText = string.Join("\n", lines.Select(l =>
             {
                 if (l.TimestampSeconds.HasValue)
                 {
@@ -89,6 +75,10 @@ Respond with ONLY the raw JSON array, no markdown, no explanation.";
             };
 
             ChatCompletion completion = await CompleteChatWithRetryAsync(messages);
+
+            // Global pacing: wait inside the semaphore so ALL callers are throttled
+            await Task.Delay(4000);
+
             if (completion.Content == null || completion.Content.Count == 0) return [];
             var json = completion.Content[0].Text.Trim();
 
@@ -114,8 +104,9 @@ Respond with ONLY the raw JSON array, no markdown, no explanation.";
 
     private async Task<ChatCompletion> CompleteChatWithRetryAsync(List<ChatMessage> messages)
     {
-        int delayMs = 5000;
-        for (int attempt = 0; attempt < 5; attempt++)
+        int delayMs = 15_000; // start at 15s — Gemini free tier resets per minute
+        const int maxAttempts = 8;
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
         {
             try
             {
@@ -123,9 +114,11 @@ Respond with ONLY the raw JSON array, no markdown, no explanation.";
             }
             catch (System.ClientModel.ClientResultException ex) when (ex.Status == 429)
             {
-                if (attempt == 4) throw;
+                if (attempt == maxAttempts - 1) throw;
+                _logger.LogWarning("Gemini 429 — waiting {delay}s before retry {attempt}/{max}",
+                    delayMs / 1000, attempt + 1, maxAttempts);
                 await Task.Delay(delayMs);
-                delayMs *= 2;
+                delayMs = Math.Min(delayMs * 2, 120_000); // cap at 2 minutes
             }
         }
         throw new InvalidOperationException("Unreachable");
