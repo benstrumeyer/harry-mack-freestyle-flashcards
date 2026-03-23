@@ -12,18 +12,24 @@ var connectionString = builder.Configuration.GetConnectionString("Default")
 var dataSource = NpgsqlDataSource.Create(connectionString);
 builder.Services.AddSingleton(dataSource);
 
-// Gemini (via OpenAI-compatible API)
+// Gemini (via OpenAI-compatible API) — optional; pipeline features require it
 var geminiKey = builder.Configuration["GEMINI_API_KEY"]
-    ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY")
-    ?? throw new InvalidOperationException("GEMINI_API_KEY is required.");
-var geminiOptions = new OpenAIClientOptions
+    ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY");
+if (!string.IsNullOrEmpty(geminiKey))
 {
-    Endpoint = new Uri("https://generativelanguage.googleapis.com/v1beta/openai/"),
-    NetworkTimeout = TimeSpan.FromMinutes(5)
-};
-var chatClient = new OpenAIClient(new ApiKeyCredential(geminiKey), geminiOptions)
-    .GetChatClient("gemini-2.5-flash");
-builder.Services.AddSingleton(chatClient);
+    var geminiOptions = new OpenAIClientOptions
+    {
+        Endpoint = new Uri("https://generativelanguage.googleapis.com/v1beta/openai/"),
+        NetworkTimeout = TimeSpan.FromMinutes(5)
+    };
+    var chatClient = new OpenAIClient(new ApiKeyCredential(geminiKey), geminiOptions)
+        .GetChatClient("gemini-2.5-flash");
+    builder.Services.AddSingleton(chatClient);
+}
+else
+{
+    Console.WriteLine("WARNING: GEMINI_API_KEY not set — pipeline features will be unavailable.");
+}
 
 // Services
 builder.Services.AddSingleton<TranscriptParser>();
