@@ -106,6 +106,16 @@ public class PipelineService
     public async Task<List<string>> GetPlaylistVideoUrlsAsync(string playlistUrl)
     {
         playlistUrl = NormalizeYoutubeUrl(playlistUrl);
+
+        // watch_videos URLs embed video IDs directly — parse them instead of using yt-dlp
+        var watchVideosMatch = Regex.Match(playlistUrl, @"[?&]video_ids=([^&]+)");
+        if (watchVideosMatch.Success)
+        {
+            var ids = Uri.UnescapeDataString(watchVideosMatch.Groups[1].Value)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            return ids.Select(id => $"https://www.youtube.com/watch?v={id}").ToList();
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName = "yt-dlp",
@@ -117,7 +127,9 @@ public class PipelineService
 
         using var proc = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start yt-dlp.");
         var output = await proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
         await proc.WaitForExitAsync();
+        await stderrTask;
 
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     }
@@ -314,7 +326,9 @@ public class PipelineService
             using var proc = Process.Start(psi);
             if (proc == null) return null;
             var title = (await proc.StandardOutput.ReadLineAsync())?.Trim();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
             await proc.WaitForExitAsync();
+            await stderrTask;
             return string.IsNullOrWhiteSpace(title) ? null : title;
         }
         catch { return null; }
@@ -326,14 +340,19 @@ public class PipelineService
         var psi = new ProcessStartInfo
         {
             FileName = "yt-dlp",
-            Arguments = $"--write-auto-sub --sub-lang en --skip-download -o \"{outputTemplate}\" \"{url}\"",
+            Arguments = $"--write-auto-sub --sub-lang en --skip-download --no-progress -o \"{outputTemplate}\" \"{url}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
         };
 
         using var proc = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start yt-dlp.");
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        await Task.WhenAll(stdoutTask, stderrTask);
         await proc.WaitForExitAsync();
+
+        _logger.LogInformation("yt-dlp exit {code} for {id}", proc.ExitCode, youtubeId);
 
         var vttFiles = Directory.GetFiles("/tmp", $"{youtubeId}*.vtt");
         return vttFiles.FirstOrDefault();

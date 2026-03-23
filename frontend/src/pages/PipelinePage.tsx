@@ -76,7 +76,7 @@ export default function PipelinePage() {
   }, [plQueued])
 
   const isPlaylistUrl = (url: string) =>
-    /list=|\/playlist|\/show\//i.test(url)
+    /list=|\/playlist|\/show\/|watch_videos/i.test(url)
 
   const fmtElapsed = (s: number) =>
     s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`
