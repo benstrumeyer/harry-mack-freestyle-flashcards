@@ -10,6 +10,7 @@ public class PipelineController : ControllerBase
 {
     private readonly PipelineService _pipeline;
     private readonly IServiceScopeFactory _scopeFactory;
+    private static int _playlistRunning = 0; // guard against double-submission
 
     public PipelineController(PipelineService pipeline, IServiceScopeFactory scopeFactory)
     {
@@ -27,16 +28,28 @@ public class PipelineController : ControllerBase
     [HttpPost("process-playlist")]
     public async Task<ActionResult<PlaylistQueuedDto>> ProcessPlaylist([FromBody] ProcessPlaylistRequest req)
     {
+        if (Interlocked.CompareExchange(ref _playlistRunning, 1, 0) != 0)
+            return Conflict(new PlaylistQueuedDto("A playlist is already being processed. Wait for it to finish.", 0));
+
         var videoUrls = await _pipeline.GetPlaylistVideoUrlsAsync(req.Url);
         if (videoUrls.Count == 0)
+        {
+            Interlocked.Exchange(ref _playlistRunning, 0);
             return Ok(new PlaylistQueuedDto("No videos found in playlist.", 0));
+        }
 
-        // Fire and forget — survives frontend refreshes, runs 3 videos concurrently
         _ = Task.Run(async () =>
         {
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var pipeline = scope.ServiceProvider.GetRequiredService<PipelineService>();
-            await pipeline.ProcessPlaylistVideosAsync(videoUrls);
+            try
+            {
+                await using var scope = _scopeFactory.CreateAsyncScope();
+                var pipeline = scope.ServiceProvider.GetRequiredService<PipelineService>();
+                await pipeline.ProcessPlaylistVideosAsync(videoUrls);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _playlistRunning, 0);
+            }
         });
 
         return Accepted(new PlaylistQueuedDto($"Queued {videoUrls.Count} videos for background processing.", videoUrls.Count));

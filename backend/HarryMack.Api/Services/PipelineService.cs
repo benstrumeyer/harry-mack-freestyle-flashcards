@@ -136,9 +136,9 @@ public class PipelineService
 
     public async Task ProcessPlaylistVideosAsync(List<string> videoUrls)
     {
-        _logger.LogInformation("Background playlist: processing {count} videos (5 concurrent)", videoUrls.Count);
+        _logger.LogInformation("Background playlist: processing {count} videos (2 concurrent)", videoUrls.Count);
 
-        using var sem = new SemaphoreSlim(5);
+        using var sem = new SemaphoreSlim(2);
 
         var tasks = videoUrls.Select(async url =>
         {
@@ -151,7 +151,7 @@ public class PipelineService
         _logger.LogInformation("Background playlist complete.");
     }
 
-    private async Task ProcessUrlWithRetryAsync(string url, int maxAttempts = 4)
+    private async Task ProcessUrlWithRetryAsync(string url, int maxAttempts = 3)
     {
         int delayMs = 10_000;
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
@@ -159,6 +159,18 @@ public class PipelineService
             try
             {
                 await ProcessUrlAsync(url);
+                return;
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("subtitle file"))
+            {
+                // Video has no captions — retrying won't help
+                _logger.LogWarning("Skipping {url}: no subtitles available", url);
+                return;
+            }
+            catch (Exception ex) when (ex.Message.Contains("429"))
+            {
+                // LlmExtractor already retried 5 times with backoff — don't retry the whole video
+                _logger.LogError("Giving up on {url}: Gemini rate limit exhausted after LLM retries", url);
                 return;
             }
             catch (Exception ex)
@@ -171,7 +183,7 @@ public class PipelineService
                 _logger.LogWarning("Attempt {attempt}/{maxAttempts} failed for {url}: {msg}. Retrying in {delay}s…",
                     attempt, maxAttempts, url, ex.Message, delayMs / 1000);
                 await Task.Delay(delayMs);
-                delayMs = Math.Min(delayMs * 2, 120_000); // cap at 2 minutes
+                delayMs = Math.Min(delayMs * 2, 120_000);
             }
         }
     }
