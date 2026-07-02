@@ -1,0 +1,205 @@
+[
+  {
+    "text": "born",
+    "start": 0.0,
+    "end": 0.2,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "in",
+    "start": 0.25,
+    "end": 0.45,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "a",
+    "start": 0.5,
+    "end": 0.7,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "world",
+    "start": 0.75,
+    "end": 0.95,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "where",
+    "start": 1.0,
+    "end": 1.2,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "the",
+    "start": 1.25,
+    "end": 1.45,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "people",
+    "start": 1.5,
+    "end": 1.7,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "don't",
+    "start": 1.75,
+    "end": 1.95,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "care",
+    "start": 2.0,
+    "end": 2.2,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "throw",
+    "start": 2.8,
+    "end": 3.0,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "my",
+    "start": 3.05,
+    "end": 3.25,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "hands",
+    "start": 3.3,
+    "end": 3.5,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "up",
+    "start": 3.55,
+    "end": 3.75,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "in",
+    "start": 3.8,
+    "end": 4.0,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "the",
+    "start": 4.05,
+    "end": 4.25,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "air",
+    "start": 4.3,
+    "end": 4.5,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "yeah",
+    "start": 5.1,
+    "end": 5.3,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "every",
+    "start": 5.9,
+    "end": 6.1,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "single",
+    "start": 6.15,
+    "end": 6.35,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "day",
+    "start": 6.4,
+    "end": 6.6,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "I",
+    "start": 6.65,
+    "end": 6.85,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "grind",
+    "start": 6.9,
+    "end": 7.1,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "peace",
+    "start": 7.7,
+    "end": 7.9,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "of",
+    "start": 7.95,
+    "end": 8.15,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "mind",
+    "start": 8.2,
+    "end": 8.4,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "is",
+    "start": 8.45,
+    "end": 8.65,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "what",
+    "start": 8.7,
+    "end": 8.9,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "I",
+    "start": 8.95,
+    "end": 9.15,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  },
+  {
+    "text": "find",
+    "start": 9.2,
+    "end": 9.4,
+    "score": 1.0,
+    "speaker": "SPEAKER_00"
+  }
+]
