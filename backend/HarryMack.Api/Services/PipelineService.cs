@@ -1,21 +1,21 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using HarryMack.Api.Data;
 using HarryMack.Api.Models;
-using Npgsql;
-using NpgsqlTypes;
+using Microsoft.Data.Sqlite;
 
 namespace HarryMack.Api.Services;
 
 public class PipelineService
 {
-    private readonly NpgsqlDataSource _db;
+    private readonly Db _db;
     private readonly TranscriptParser _parser;
     private readonly LlmExtractor _extractor;
     private readonly PhoneticService _phonetic;
     private readonly ILogger<PipelineService> _logger;
     private const string TranscriptsDir = "/app/transcripts";
 
-    public PipelineService(NpgsqlDataSource db, TranscriptParser parser, LlmExtractor extractor, PhoneticService phonetic, ILogger<PipelineService> logger)
+    public PipelineService(Db db, TranscriptParser parser, LlmExtractor extractor, PhoneticService phonetic, ILogger<PipelineService> logger)
     {
         _db = db;
         _parser = parser;
@@ -190,19 +190,28 @@ public class PipelineService
 
     public async Task ResetAllAsync()
     {
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "TRUNCATE videos, openers, rhyme_words, sessions CASCADE";
+        cmd.CommandText = @"
+            DELETE FROM opener_sources;
+            DELETE FROM rhyme_word_bars;
+            DELETE FROM rhyme_pairs;
+            DELETE FROM saved_openers;
+            DELETE FROM bars;
+            DELETE FROM openers;
+            DELETE FROM rhyme_words;
+            DELETE FROM sessions;
+            DELETE FROM videos;";
         await cmd.ExecuteNonQueryAsync();
     }
 
     public async Task<(int removed, int total)> ValidateRhymePairsAsync()
     {
         // Load all pairs with word strings
-        var pairs = new List<(Guid idA, Guid idB, string wordA, string wordB)>();
+        var pairs = new List<(string idA, string idB, string wordA, string wordB)>();
         var words = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = @"
@@ -213,8 +222,8 @@ public class PipelineService
             await using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                var idA = reader.GetGuid(0);
-                var idB = reader.GetGuid(1);
+                var idA = reader.GetString(0);
+                var idB = reader.GetString(1);
                 var wA = reader.GetString(2);
                 var wB = reader.GetString(3);
                 pairs.Add((idA, idB, wA, wB));
@@ -236,9 +245,9 @@ public class PipelineService
             if (!rhymes)
             {
                 await using var delCmd = conn.CreateCommand();
-                delCmd.CommandText = "DELETE FROM rhyme_pairs WHERE word_a_id = $1 AND word_b_id = $2";
-                delCmd.Parameters.AddWithValue(idA);
-                delCmd.Parameters.AddWithValue(idB);
+                delCmd.CommandText = "DELETE FROM rhyme_pairs WHERE word_a_id = $a AND word_b_id = $b";
+                delCmd.Parameters.AddWithValue("$a", idA);
+                delCmd.Parameters.AddWithValue("$b", idB);
                 await delCmd.ExecuteNonQueryAsync();
                 removed++;
             }
@@ -251,11 +260,11 @@ public class PipelineService
     public async Task<List<VideoStatusDto>> GetStatusAsync()
     {
         var result = new List<VideoStatusDto>();
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
             SELECT v.id, v.title, v.source, v.filename, v.url, v.processed_at,
-                   COUNT(b.id)::int as bar_count
+                   COUNT(b.id) as bar_count
             FROM videos v
             LEFT JOIN bars b ON b.video_id = v.id
             GROUP BY v.id
@@ -265,12 +274,12 @@ public class PipelineService
         while (await reader.ReadAsync())
         {
             result.Add(new VideoStatusDto(
-                reader.GetGuid(0),
+                reader.GetString(0),
                 reader.IsDBNull(1) ? null : reader.GetString(1),
                 reader.GetString(2),
                 reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.IsDBNull(4) ? null : reader.GetString(4),
-                reader.GetFieldValue<DateTimeOffset>(5),
+                Sql.Ts(reader.GetString(5)),
                 reader.GetInt32(6)
             ));
         }
@@ -281,19 +290,19 @@ public class PipelineService
 
     private async Task<bool> FileAlreadyProcessedAsync(string filename)
     {
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT 1 FROM videos WHERE filename = $1";
-        cmd.Parameters.AddWithValue(filename);
+        cmd.CommandText = "SELECT 1 FROM videos WHERE filename = $p1";
+        cmd.Parameters.AddWithValue("$p1", filename);
         return await cmd.ExecuteScalarAsync() != null;
     }
 
     private async Task<bool> YoutubeAlreadyProcessedAsync(string youtubeId)
     {
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT 1 FROM videos WHERE youtube_id = $1";
-        cmd.Parameters.AddWithValue(youtubeId);
+        cmd.CommandText = "SELECT 1 FROM videos WHERE youtube_id = $p1";
+        cmd.Parameters.AddWithValue("$p1", youtubeId);
         return await cmd.ExecuteScalarAsync() != null;
     }
 
@@ -374,24 +383,25 @@ public class PipelineService
         string title, string source, string? filename, string? youtubeId, string? url,
         List<RawLine> rawLines, List<ExtractedBar> extractedBars)
     {
-        await using var conn = await _db.OpenConnectionAsync();
-        await using var tx = await conn.BeginTransactionAsync();
+        await using var conn = _db.Open();
+        await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync();
 
         try
         {
-            Guid videoId;
+            var videoId = Guid.NewGuid().ToString("N");
             {
                 await using var cmd = conn.CreateCommand();
+                cmd.Transaction = tx;
                 cmd.CommandText = @"
-                    INSERT INTO videos (title, source, filename, youtube_id, url)
-                    VALUES ($1, $2, $3, $4, $5)
-                    RETURNING id";
-                cmd.Parameters.AddWithValue(title);
-                cmd.Parameters.AddWithValue(source);
-                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)filename ?? DBNull.Value });
-                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)youtubeId ?? DBNull.Value });
-                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)url ?? DBNull.Value });
-                videoId = (Guid)(await cmd.ExecuteScalarAsync())!;
+                    INSERT INTO videos (id, title, source, filename, youtube_id, url)
+                    VALUES ($id, $title, $source, $filename, $ytid, $url)";
+                cmd.Parameters.AddWithValue("$id", videoId);
+                cmd.Parameters.AddWithValue("$title", title);
+                cmd.Parameters.AddWithValue("$source", source);
+                cmd.Parameters.AddWithValue("$filename", (object?)filename ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$ytid", (object?)youtubeId ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$url", (object?)url ?? DBNull.Value);
+                await cmd.ExecuteNonQueryAsync();
             }
 
             var lineByIndex = rawLines.ToDictionary(l => l.Index);
@@ -403,53 +413,57 @@ public class PipelineService
                 var barText = !string.IsNullOrWhiteSpace(bar.BarText) ? bar.BarText : rawLine?.Text ?? "";
                 float? ts = rawLine?.TimestampSeconds;
 
-                Guid barId;
+                var barId = Guid.NewGuid().ToString("N");
                 {
                     await using var cmd = conn.CreateCommand();
+                    cmd.Transaction = tx;
                     cmd.CommandText = @"
-                        INSERT INTO bars (video_id, text, timestamp_seconds, bar_index)
-                        VALUES ($1, $2, $3, $4)
-                        RETURNING id";
-                    cmd.Parameters.AddWithValue(videoId);
-                    cmd.Parameters.AddWithValue(barText);
-                    cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)ts ?? DBNull.Value });
-                    cmd.Parameters.AddWithValue(bar.Index);
-                    barId = (Guid)(await cmd.ExecuteScalarAsync())!;
+                        INSERT INTO bars (id, video_id, text, timestamp_seconds, bar_index)
+                        VALUES ($id, $vid, $text, $ts, $idx)";
+                    cmd.Parameters.AddWithValue("$id", barId);
+                    cmd.Parameters.AddWithValue("$vid", videoId);
+                    cmd.Parameters.AddWithValue("$text", barText);
+                    cmd.Parameters.AddWithValue("$ts", (object?)ts ?? DBNull.Value);
+                    cmd.Parameters.AddWithValue("$idx", bar.Index);
+                    await cmd.ExecuteNonQueryAsync();
                 }
 
                 if (!string.IsNullOrWhiteSpace(bar.Opener)
                     && barText.StartsWith(bar.Opener, StringComparison.OrdinalIgnoreCase))
                 {
                     var openerText = bar.Opener.Trim().ToLowerInvariant();
-                    Guid openerId;
+                    string openerId;
                     {
                         await using var cmd = conn.CreateCommand();
+                        cmd.Transaction = tx;
                         cmd.CommandText = @"
-                            INSERT INTO openers (text, frequency, example_completions)
-                            VALUES ($1, 1, ARRAY[$2::text])
-                            ON CONFLICT (text) DO UPDATE
-                              SET frequency = openers.frequency + 1,
-                                  example_completions = array_append(openers.example_completions, $2::text)
+                            INSERT INTO openers (id, text, frequency, example_completions)
+                            VALUES ($id, $t, 1, json_array($c))
+                            ON CONFLICT(text) DO UPDATE
+                              SET frequency = frequency + 1,
+                                  example_completions = json_insert(example_completions, '$[#]', $c)
                             RETURNING id";
-                        cmd.Parameters.AddWithValue(openerText);
-                        cmd.Parameters.AddWithValue(barText);
-                        openerId = (Guid)(await cmd.ExecuteScalarAsync())!;
+                        cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+                        cmd.Parameters.AddWithValue("$t", openerText);
+                        cmd.Parameters.AddWithValue("$c", barText);
+                        openerId = (string)(await cmd.ExecuteScalarAsync())!;
                         openerCount++;
                     }
 
                     await using var linkCmd = conn.CreateCommand();
+                    linkCmd.Transaction = tx;
                     linkCmd.CommandText = @"
                         INSERT INTO opener_sources (opener_id, bar_id)
-                        VALUES ($1, $2)
+                        VALUES ($o, $b)
                         ON CONFLICT DO NOTHING";
-                    linkCmd.Parameters.AddWithValue(openerId);
-                    linkCmd.Parameters.AddWithValue(barId);
+                    linkCmd.Parameters.AddWithValue("$o", openerId);
+                    linkCmd.Parameters.AddWithValue("$b", barId);
                     await linkCmd.ExecuteNonQueryAsync();
                 }
 
                 if (bar.RhymeWords != null && bar.RhymeWords.Count > 0)
                 {
-                    var wordPairs = new List<(Guid id, string word)>();
+                    var wordPairs = new List<(string id, string word)>();
                     var seenWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     foreach (var rawWord in bar.RhymeWords)
                     {
@@ -457,28 +471,31 @@ public class PipelineService
                         if (string.IsNullOrWhiteSpace(word)) continue;
                         if (!seenWords.Add(word)) continue; // skip duplicates within the same bar
 
-                        Guid wordId;
+                        string wordId;
                         {
                             await using var cmd = conn.CreateCommand();
+                            cmd.Transaction = tx;
                             cmd.CommandText = @"
-                                INSERT INTO rhyme_words (word, frequency)
-                                VALUES ($1, 1)
-                                ON CONFLICT (word) DO UPDATE
-                                  SET frequency = rhyme_words.frequency + 1
+                                INSERT INTO rhyme_words (id, word, frequency)
+                                VALUES ($id, $w, 1)
+                                ON CONFLICT(word) DO UPDATE
+                                  SET frequency = frequency + 1
                                 RETURNING id";
-                            cmd.Parameters.AddWithValue(word);
-                            wordId = (Guid)(await cmd.ExecuteScalarAsync())!;
+                            cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+                            cmd.Parameters.AddWithValue("$w", word);
+                            wordId = (string)(await cmd.ExecuteScalarAsync())!;
                             rhymeCount++;
                             wordPairs.Add((wordId, word));
                         }
 
                         await using var rwbCmd = conn.CreateCommand();
+                        rwbCmd.Transaction = tx;
                         rwbCmd.CommandText = @"
                             INSERT INTO rhyme_word_bars (word_id, bar_id)
-                            VALUES ($1, $2)
+                            VALUES ($w, $b)
                             ON CONFLICT DO NOTHING";
-                        rwbCmd.Parameters.AddWithValue(wordId);
-                        rwbCmd.Parameters.AddWithValue(barId);
+                        rwbCmd.Parameters.AddWithValue("$w", wordId);
+                        rwbCmd.Parameters.AddWithValue("$b", barId);
                         await rwbCmd.ExecuteNonQueryAsync();
                     }
 
@@ -493,13 +510,14 @@ public class PipelineService
                                 (idA, idB) = (idB, idA);
 
                             await using var pairCmd = conn.CreateCommand();
+                            pairCmd.Transaction = tx;
                             pairCmd.CommandText = @"
                                 INSERT INTO rhyme_pairs (word_a_id, word_b_id, frequency)
-                                VALUES ($1, $2, 1)
-                                ON CONFLICT (word_a_id, word_b_id) DO UPDATE
-                                  SET frequency = rhyme_pairs.frequency + 1";
-                            pairCmd.Parameters.AddWithValue(idA);
-                            pairCmd.Parameters.AddWithValue(idB);
+                                VALUES ($a, $b, 1)
+                                ON CONFLICT(word_a_id, word_b_id) DO UPDATE
+                                  SET frequency = frequency + 1";
+                            pairCmd.Parameters.AddWithValue("$a", idA);
+                            pairCmd.Parameters.AddWithValue("$b", idB);
                             await pairCmd.ExecuteNonQueryAsync();
                         }
                     }

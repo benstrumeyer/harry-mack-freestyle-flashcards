@@ -1,7 +1,6 @@
+using HarryMack.Api.Data;
 using HarryMack.Api.Models;
 using Microsoft.AspNetCore.Mvc;
-using Npgsql;
-using NpgsqlTypes;
 
 namespace HarryMack.Api.Controllers;
 
@@ -9,49 +8,45 @@ namespace HarryMack.Api.Controllers;
 [Route("api/sessions")]
 public class SessionsController : ControllerBase
 {
-    private readonly NpgsqlDataSource _db;
+    private readonly Db _db;
 
-    public SessionsController(NpgsqlDataSource db) => _db = db;
+    public SessionsController(Db db) => _db = db;
+
+    private static SessionDto ReadSession(Microsoft.Data.Sqlite.SqliteDataReader reader) =>
+        new(
+            reader.GetString(0),
+            Sql.Ts(reader.GetString(1)),
+            Json.ToArray(reader.IsDBNull(2) ? null : reader.GetString(2))
+        );
 
     [HttpPost]
     public async Task<ActionResult<SessionDto>> Create([FromBody] CreateSessionRequest req)
     {
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
-            INSERT INTO sessions (cards_shown)
-            VALUES ($1)
+            INSERT INTO sessions (id, cards_shown)
+            VALUES ($p1, $p2)
             RETURNING id, started_at, cards_shown";
-
-        var guids = req.CardsShown.Select(Guid.Parse).ToArray();
-        var param = new NpgsqlParameter
-        {
-            Value = guids,
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid
-        };
-        cmd.Parameters.Add(param);
+        cmd.Parameters.AddWithValue("$p1", Guid.NewGuid().ToString("N"));
+        cmd.Parameters.AddWithValue("$p2", Json.Of(req.CardsShown));
 
         await using var reader = await cmd.ExecuteReaderAsync();
         await reader.ReadAsync();
-
-        var cardsShown = reader.IsDBNull(2) ? Array.Empty<Guid>() : reader.GetFieldValue<Guid[]>(2);
-        return Ok(new SessionDto(reader.GetGuid(0), reader.GetFieldValue<DateTimeOffset>(1), cardsShown));
+        return Ok(ReadSession(reader));
     }
 
     [HttpGet]
     public async Task<ActionResult<List<SessionDto>>> GetAll()
     {
         var result = new List<SessionDto>();
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT id, started_at, cards_shown FROM sessions ORDER BY started_at DESC";
 
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
-        {
-            var cardsShown = reader.IsDBNull(2) ? Array.Empty<Guid>() : reader.GetFieldValue<Guid[]>(2);
-            result.Add(new SessionDto(reader.GetGuid(0), reader.GetFieldValue<DateTimeOffset>(1), cardsShown));
-        }
+            result.Add(ReadSession(reader));
         return Ok(result);
     }
 }

@@ -1,6 +1,6 @@
+using HarryMack.Api.Data;
 using HarryMack.Api.Models;
 using Microsoft.AspNetCore.Mvc;
-using Npgsql;
 
 namespace HarryMack.Api.Controllers;
 
@@ -8,15 +8,23 @@ namespace HarryMack.Api.Controllers;
 [Route("api/rhymes")]
 public class RhymesController : ControllerBase
 {
-    private readonly NpgsqlDataSource _db;
+    private readonly Db _db;
 
-    public RhymesController(NpgsqlDataSource db) => _db = db;
+    public RhymesController(Db db) => _db = db;
+
+    private static RhymeWordDto ReadWord(Microsoft.Data.Sqlite.SqliteDataReader reader) =>
+        new(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.GetInt32(3)
+        );
 
     [HttpGet]
     public async Task<ActionResult<List<RhymeWordDto>>> GetAll()
     {
         var result = new List<RhymeWordDto>();
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
             SELECT id, word, phonemes, frequency
@@ -25,14 +33,7 @@ public class RhymesController : ControllerBase
 
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
-        {
-            result.Add(new RhymeWordDto(
-                reader.GetGuid(0),
-                reader.GetString(1),
-                reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.GetInt32(3)
-            ));
-        }
+            result.Add(ReadWord(reader));
         return Ok(result);
     }
 
@@ -42,21 +43,14 @@ public class RhymesController : ControllerBase
         var nodes = new List<RhymeWordDto>();
         var edges = new List<RhymePairDto>();
 
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
 
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "SELECT id, word, phonemes, frequency FROM rhyme_words ORDER BY word";
             await using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
-            {
-                nodes.Add(new RhymeWordDto(
-                    reader.GetGuid(0),
-                    reader.GetString(1),
-                    reader.IsDBNull(2) ? null : reader.GetString(2),
-                    reader.GetInt32(3)
-                ));
-            }
+                nodes.Add(ReadWord(reader));
         }
 
         await using (var cmd = conn.CreateCommand())
@@ -83,16 +77,16 @@ public class RhymesController : ControllerBase
     [HttpGet("{word}/sources")]
     public async Task<ActionResult<List<BarSourceDto>>> GetSources(string word)
     {
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
 
-        Guid wordId;
+        string wordId;
         {
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT id FROM rhyme_words WHERE word = lower($1)";
-            cmd.Parameters.AddWithValue(word);
+            cmd.CommandText = "SELECT id FROM rhyme_words WHERE word = lower($p1)";
+            cmd.Parameters.AddWithValue("$p1", word);
             var val = await cmd.ExecuteScalarAsync();
             if (val == null) return NotFound($"Word '{word}' not found.");
-            wordId = (Guid)val;
+            wordId = (string)val;
         }
 
         var result = new List<BarSourceDto>();
@@ -103,9 +97,9 @@ public class RhymesController : ControllerBase
                 FROM rhyme_word_bars rwb
                 JOIN bars b ON b.id = rwb.bar_id
                 JOIN videos v ON v.id = b.video_id
-                WHERE rwb.word_id = $1
+                WHERE rwb.word_id = $p1
                 ORDER BY v.title, b.timestamp_seconds NULLS LAST";
-            cmd.Parameters.AddWithValue(wordId);
+            cmd.Parameters.AddWithValue("$p1", wordId);
 
             await using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
@@ -126,21 +120,20 @@ public class RhymesController : ControllerBase
     [HttpGet("{word}")]
     public async Task<ActionResult<RhymeDetailDto>> GetByWord(string word)
     {
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
 
-        RhymeWordDto? baseWord;
-        Guid wordId;
+        RhymeWordDto baseWord;
+        string wordId;
         {
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT id, word, phonemes, frequency FROM rhyme_words WHERE word = lower($1)";
-            cmd.Parameters.AddWithValue(word);
+            cmd.CommandText = "SELECT id, word, phonemes, frequency FROM rhyme_words WHERE word = lower($p1)";
+            cmd.Parameters.AddWithValue("$p1", word);
             await using var reader = await cmd.ExecuteReaderAsync();
             if (!await reader.ReadAsync())
                 return NotFound($"Word '{word}' not found.");
 
-            wordId = reader.GetGuid(0);
-            baseWord = new RhymeWordDto(wordId, reader.GetString(1),
-                reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetInt32(3));
+            baseWord = ReadWord(reader);
+            wordId = baseWord.Id;
         }
 
         var rhymes = new List<RhymeWordDto>();
@@ -150,20 +143,15 @@ public class RhymesController : ControllerBase
                 SELECT rw.id, rw.word, rw.phonemes, rw.frequency
                 FROM rhyme_pairs rp
                 JOIN rhyme_words rw ON rw.id = CASE
-                    WHEN rp.word_a_id = $1 THEN rp.word_b_id
+                    WHEN rp.word_a_id = $p1 THEN rp.word_b_id
                     ELSE rp.word_a_id
                 END
-                WHERE rp.word_a_id = $1 OR rp.word_b_id = $1
+                WHERE rp.word_a_id = $p1 OR rp.word_b_id = $p1
                 ORDER BY rw.frequency DESC, rw.word";
-            cmd.Parameters.AddWithValue(wordId);
+            cmd.Parameters.AddWithValue("$p1", wordId);
             await using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
-            {
-                rhymes.Add(new RhymeWordDto(
-                    reader.GetGuid(0), reader.GetString(1),
-                    reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetInt32(3)
-                ));
-            }
+                rhymes.Add(ReadWord(reader));
         }
 
         return Ok(new RhymeDetailDto(baseWord, rhymes));

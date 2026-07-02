@@ -1,6 +1,6 @@
+using HarryMack.Api.Data;
 using HarryMack.Api.Models;
 using Microsoft.AspNetCore.Mvc;
-using Npgsql;
 
 namespace HarryMack.Api.Controllers;
 
@@ -8,15 +8,23 @@ namespace HarryMack.Api.Controllers;
 [Route("api/openers")]
 public class OpenersController : ControllerBase
 {
-    private readonly NpgsqlDataSource _db;
+    private readonly Db _db;
 
-    public OpenersController(NpgsqlDataSource db) => _db = db;
+    public OpenersController(Db db) => _db = db;
+
+    private static OpenerDto ReadOpener(Microsoft.Data.Sqlite.SqliteDataReader reader) =>
+        new(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetInt32(2),
+            Json.ToArray(reader.IsDBNull(3) ? null : reader.GetString(3))
+        );
 
     [HttpGet]
     public async Task<ActionResult<List<OpenerDto>>> GetAll([FromQuery] string? search)
     {
         var result = new List<OpenerDto>();
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
 
         if (string.IsNullOrWhiteSpace(search))
@@ -31,39 +39,32 @@ public class OpenersController : ControllerBase
             cmd.CommandText = @"
                 SELECT id, text, frequency, example_completions
                 FROM openers
-                WHERE text ILIKE '%' || $1 || '%'
+                WHERE text LIKE '%' || $p1 || '%'
                 ORDER BY frequency DESC, text";
-            cmd.Parameters.AddWithValue(search);
+            cmd.Parameters.AddWithValue("$p1", search);
         }
 
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
-        {
-            result.Add(new OpenerDto(
-                reader.GetGuid(0),
-                reader.GetString(1),
-                reader.GetInt32(2),
-                reader.IsDBNull(3) ? [] : reader.GetFieldValue<string[]>(3)
-            ));
-        }
+            result.Add(ReadOpener(reader));
 
         return Ok(result);
     }
 
     [HttpGet("{id}/sources")]
-    public async Task<ActionResult<List<BarSourceDto>>> GetSources(Guid id)
+    public async Task<ActionResult<List<BarSourceDto>>> GetSources(string id)
     {
         var result = new List<BarSourceDto>();
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
             SELECT v.title, v.url, v.youtube_id, b.timestamp_seconds, b.text
             FROM opener_sources os
             JOIN bars b ON b.id = os.bar_id
             JOIN videos v ON v.id = b.video_id
-            WHERE os.opener_id = $1
+            WHERE os.opener_id = $p1
             ORDER BY v.title, b.timestamp_seconds NULLS LAST";
-        cmd.Parameters.AddWithValue(id);
+        cmd.Parameters.AddWithValue("$p1", id);
 
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
@@ -81,12 +82,12 @@ public class OpenersController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    public async Task<IActionResult> Delete(Guid id)
+    public async Task<IActionResult> Delete(string id)
     {
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM openers WHERE id = $1";
-        cmd.Parameters.AddWithValue(id);
+        cmd.CommandText = "DELETE FROM openers WHERE id = $p1";
+        cmd.Parameters.AddWithValue("$p1", id);
         var rows = await cmd.ExecuteNonQueryAsync();
         return rows > 0 ? NoContent() : NotFound();
     }
@@ -94,7 +95,7 @@ public class OpenersController : ControllerBase
     [HttpGet("random")]
     public async Task<ActionResult<OpenerDto>> GetRandom()
     {
-        await using var conn = await _db.OpenConnectionAsync();
+        await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
             SELECT id, text, frequency, example_completions
@@ -106,11 +107,6 @@ public class OpenersController : ControllerBase
         if (!await reader.ReadAsync())
             return NotFound("No openers found. Add transcripts via the Pipeline page.");
 
-        return Ok(new OpenerDto(
-            reader.GetGuid(0),
-            reader.GetString(1),
-            reader.GetInt32(2),
-            reader.IsDBNull(3) ? [] : reader.GetFieldValue<string[]>(3)
-        ));
+        return Ok(ReadOpener(reader));
     }
 }
