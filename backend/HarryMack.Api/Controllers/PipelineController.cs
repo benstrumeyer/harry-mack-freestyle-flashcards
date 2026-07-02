@@ -21,7 +21,7 @@ public class PipelineController : ControllerBase
     [HttpPost("process-url")]
     public async Task<ActionResult<PipelineResultDto>> ProcessUrl([FromBody] ProcessUrlRequest req)
     {
-        var result = await _pipeline.ProcessUrlAsync(req.Url, "harry_mack");
+        var result = await _pipeline.ProcessUrlAsync(req.Url, req.Artist);
         return Ok(result);
     }
 

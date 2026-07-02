@@ -23,15 +23,12 @@ function ResultBadge({ result }: { result: PipelineResultDto }) {
 }
 
 export default function PipelinePage() {
-  const [localLoading, setLocalLoading] = useState(false)
-  const [localResult, setLocalResult] = useState<PipelineResultDto | null>(null)
-  const [localError, setLocalError] = useState<string | null>(null)
-
   const [validateLoading, setValidateLoading] = useState(false)
   const [validateResult, setValidateResult] = useState<{ message: string; removed: number; total: number } | null>(null)
   const [validateError, setValidateError] = useState<string | null>(null)
 
   const [ytUrl, setYtUrl] = useState('')
+  const [artist, setArtist] = useState('harry_mack')
   const [ytLoading, setYtLoading] = useState(false)
   const [ytResult, setYtResult] = useState<PipelineResultDto | null>(null)
   const [ytError, setYtError] = useState<string | null>(null)
@@ -81,21 +78,6 @@ export default function PipelinePage() {
   const fmtElapsed = (s: number) =>
     s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`
 
-  const parseLocal = async () => {
-    setLocalLoading(true)
-    setLocalResult(null)
-    setLocalError(null)
-    try {
-      const r = await api.parseLocal()
-      setLocalResult(r)
-      refreshStatus()
-    } catch (e) {
-      setLocalError(String(e))
-    } finally {
-      setLocalLoading(false)
-    }
-  }
-
   const validateRhymes = async () => {
     setValidateLoading(true)
     setValidateResult(null)
@@ -132,7 +114,7 @@ export default function PipelinePage() {
     } else {
       setYtLoading(true)
       try {
-        const r = await api.processUrl(url)
+        const r = await api.processUrl(url, artist)
         setYtResult(r)
         setYtUrl('')
         refreshStatus()
@@ -172,38 +154,6 @@ export default function PipelinePage() {
       <h1 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '1.5rem' }}>
         Pipeline
       </h1>
-
-      {/* Local transcripts section */}
-      <section style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '0.5rem' }}>
-          Local Transcripts
-        </h2>
-        <p style={{ color: 'var(--color-muted)', fontSize: '0.88rem', marginBottom: '0.75rem' }}>
-          Drop <code>.txt</code> files into the <code>transcripts/</code> directory, then click below.
-        </p>
-        <button
-          onClick={parseLocal}
-          disabled={localLoading}
-          style={{
-            padding: '0.6rem 1.2rem',
-            background: localLoading ? 'var(--color-border)' : 'var(--color-primary)',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '8px',
-            fontWeight: 600,
-            cursor: localLoading ? 'not-allowed' : 'pointer',
-            fontSize: '0.9rem',
-          }}
-        >
-          {localLoading ? 'Parsing…' : 'Parse Transcripts'}
-        </button>
-        {localResult && <ResultBadge result={localResult} />}
-        {localError && (
-          <p style={{ color: 'var(--color-primary)', marginTop: '0.5rem', fontSize: '0.85rem' }}>
-            Error: {localError}
-          </p>
-        )}
-      </section>
 
       {/* Validate Rhymes section */}
       <section style={{ marginBottom: '2rem' }}>
@@ -253,6 +203,25 @@ export default function PipelinePage() {
           Paste a YouTube video or playlist URL. Playlists will be processed video by video — already-done videos are skipped automatically.
         </p>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <select
+            value={artist}
+            onChange={e => setArtist(e.target.value)}
+            disabled={!!plQueued}
+            aria-label="Artist"
+            style={{
+              padding: '0.6rem 0.7rem',
+              borderRadius: '8px',
+              border: '1px solid var(--color-border)',
+              background: 'var(--color-surface)',
+              color: 'var(--color-text)',
+              fontSize: '0.9rem',
+              outline: 'none',
+              opacity: plQueued ? 0.5 : 1,
+            }}
+          >
+            <option value="harry_mack">Harry Mack</option>
+            <option value="juice_wrld">Juice WRLD</option>
+          </select>
           <input
             type="text"
             placeholder="https://www.youtube.com/watch?v=... or playlist?list=..."

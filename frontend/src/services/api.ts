@@ -105,12 +105,10 @@ export interface BarSourceDto {
 }
 
 export const api = {
-  processUrl: (url: string) =>
-    post<PipelineResultDto>('/pipeline/process-url', { url }),
+  processUrl: (url: string, artist = 'harry_mack') =>
+    post<PipelineResultDto>('/pipeline/process-url', { url, artist }),
   processPlaylist: (url: string) =>
     post<PlaylistQueuedDto>('/pipeline/process-playlist', { url }),
-  parseLocal: () =>
-    post<PipelineResultDto>('/pipeline/parse-local'),
   getPipelineStatus: () =>
     get<VideoStatusDto[]>('/pipeline/status'),
   validateRhymes: () =>

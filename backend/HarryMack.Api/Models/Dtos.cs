@@ -1,7 +1,7 @@
 namespace HarryMack.Api.Models;
 
 // --- Request DTOs ---
-public record ProcessUrlRequest(string Url);
+public record ProcessUrlRequest(string Url, string Artist = "harry_mack");
 public record ProcessPlaylistRequest(string Url);
 
 // --- Response DTOs ---
