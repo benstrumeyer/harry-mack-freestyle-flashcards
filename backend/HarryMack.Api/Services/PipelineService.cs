@@ -9,98 +9,34 @@ namespace HarryMack.Api.Services;
 public class PipelineService
 {
     private readonly Db _db;
-    private readonly TranscriptParser _parser;
-    private readonly LlmExtractor _extractor;
+    private readonly IExtractorClient _extractor;
     private readonly PhoneticService _phonetic;
     private readonly ILogger<PipelineService> _logger;
-    private const string TranscriptsDir = "/app/transcripts";
 
-    public PipelineService(Db db, TranscriptParser parser, LlmExtractor extractor, PhoneticService phonetic, ILogger<PipelineService> logger)
+    public PipelineService(Db db, IExtractorClient extractor, PhoneticService phonetic, ILogger<PipelineService> logger)
     {
         _db = db;
-        _parser = parser;
         _extractor = extractor;
         _phonetic = phonetic;
         _logger = logger;
     }
 
-    public async Task<PipelineResultDto> ProcessLocalAsync()
-    {
-        if (!Directory.Exists(TranscriptsDir))
-            return new PipelineResultDto("Transcripts directory not found.", 0, 0, 0);
-
-        var files = Directory.GetFiles(TranscriptsDir, "*.txt");
-        if (files.Length == 0)
-            return new PipelineResultDto("No .txt files found in transcripts/.", 0, 0, 0);
-
-        int totalBars = 0, totalOpeners = 0, totalRhymes = 0;
-
-        foreach (var filePath in files)
-        {
-            var filename = Path.GetFileName(filePath);
-
-            if (await FileAlreadyProcessedAsync(filename))
-            {
-                _logger.LogInformation("Skipping already-processed file: {filename}", filename);
-                continue;
-            }
-
-            _logger.LogInformation("Processing local transcript: {filename}", filename);
-
-            var rawLines = _parser.ParseLocalTxt(filePath);
-            if (rawLines.Count == 0)
-            {
-                _logger.LogWarning("No lines extracted from {filename}", filename);
-                continue;
-            }
-
-            var extracted = await _extractor.ExtractAsync(rawLines);
-            var bars = extracted.Where(e => e.IsFreestyle).ToList();
-
-            var (openers, rhymes) = await UpsertResultsAsync(
-                title: filename, source: "local", filename: filename,
-                youtubeId: null, url: null, rawLines: rawLines, extractedBars: bars);
-
-            totalBars += bars.Count;
-            totalOpeners += openers;
-            totalRhymes += rhymes;
-        }
-
-        return new PipelineResultDto($"Processed {files.Length} file(s).", totalBars, totalOpeners, totalRhymes);
-    }
-
-    public async Task<PipelineResultDto> ProcessUrlAsync(string url)
+    public async Task<PipelineResultDto> ProcessUrlAsync(string url, string artist)
     {
         url = NormalizeYoutubeUrl(url);
         var youtubeId = ExtractYoutubeId(url);
-        if (youtubeId == null)
-            throw new ArgumentException("Could not extract YouTube ID from URL.");
-
-        if (await YoutubeAlreadyProcessedAsync(youtubeId))
+        if (youtubeId != null && await YoutubeAlreadyProcessedAsync(youtubeId))
             return new PipelineResultDto($"Already processed: {youtubeId}.", 0, 0, 0);
 
-        _logger.LogInformation("Running yt-dlp for {youtubeId}", youtubeId);
+        _logger.LogInformation("Extracting {url} (artist={artist})", url, artist);
 
-        var vttPath = await DownloadSubtitlesAsync(url, youtubeId);
-        if (vttPath == null)
-            throw new InvalidOperationException("yt-dlp did not produce a subtitle file.");
+        var result = await _extractor.ExtractAsync(url, artist, CancellationToken.None);
+        var bars = result.Bars.Where(b => b.IsFreestyle).ToList();
+        if (bars.Count == 0)
+            return new PipelineResultDto("No bars extracted.", 0, 0, 0);
 
-        var rawLines = _parser.ParseVtt(vttPath);
-        try { File.Delete(vttPath); } catch { /* best effort */ }
-
-        if (rawLines.Count == 0)
-            return new PipelineResultDto("No lines extracted from VTT.", 0, 0, 0);
-
-        var extracted = await _extractor.ExtractAsync(rawLines);
-        var bars = extracted.Where(e => e.IsFreestyle).ToList();
-
-        var title = await FetchVideoTitleAsync(url);
-
-        var (openers, rhymes) = await UpsertResultsAsync(
-            title: title ?? youtubeId, source: "youtube", filename: null,
-            youtubeId: youtubeId, url: url, rawLines: rawLines, extractedBars: bars);
-
-        return new PipelineResultDto($"Processed YouTube video {youtubeId}.", bars.Count, openers, rhymes);
+        var (openers, rhymes) = await UpsertResultsAsync(result.Video, artist, bars);
+        return new PipelineResultDto($"Extracted {bars.Count} bars.", bars.Count, openers, rhymes);
     }
 
     public async Task<List<string>> GetPlaylistVideoUrlsAsync(string playlistUrl)
@@ -134,7 +70,7 @@ public class PipelineService
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     }
 
-    public async Task ProcessPlaylistVideosAsync(List<string> videoUrls)
+    public async Task ProcessPlaylistVideosAsync(List<string> videoUrls, string artist)
     {
         _logger.LogInformation("Background playlist: processing {count} videos (2 concurrent)", videoUrls.Count);
 
@@ -143,7 +79,7 @@ public class PipelineService
         var tasks = videoUrls.Select(async url =>
         {
             await sem.WaitAsync();
-            try { await ProcessUrlWithRetryAsync(url); }
+            try { await ProcessUrlWithRetryAsync(url, artist); }
             finally { sem.Release(); }
         });
 
@@ -151,26 +87,14 @@ public class PipelineService
         _logger.LogInformation("Background playlist complete.");
     }
 
-    private async Task ProcessUrlWithRetryAsync(string url, int maxAttempts = 3)
+    private async Task ProcessUrlWithRetryAsync(string url, string artist, int maxAttempts = 3)
     {
         int delayMs = 10_000;
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
-                await ProcessUrlAsync(url);
-                return;
-            }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("subtitle file"))
-            {
-                // Video has no captions — retrying won't help
-                _logger.LogWarning("Skipping {url}: no subtitles available", url);
-                return;
-            }
-            catch (Exception ex) when (ex.Message.Contains("429"))
-            {
-                // LlmExtractor already retried 5 times with backoff — don't retry the whole video
-                _logger.LogError("Giving up on {url}: Gemini rate limit exhausted after LLM retries", url);
+                await ProcessUrlAsync(url, artist);
                 return;
             }
             catch (Exception ex)
@@ -288,15 +212,6 @@ public class PipelineService
 
     // ---- Private helpers ----
 
-    private async Task<bool> FileAlreadyProcessedAsync(string filename)
-    {
-        await using var conn = _db.Open();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT 1 FROM videos WHERE filename = $p1";
-        cmd.Parameters.AddWithValue("$p1", filename);
-        return await cmd.ExecuteScalarAsync() != null;
-    }
-
     private async Task<bool> YoutubeAlreadyProcessedAsync(string youtubeId)
     {
         await using var conn = _db.Open();
@@ -332,56 +247,8 @@ public class PipelineService
         return url;
     }
 
-    private async Task<string?> FetchVideoTitleAsync(string url)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "yt-dlp",
-                Arguments = $"--print \"%(title)s\" --skip-download \"{url}\"",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            };
-            using var proc = Process.Start(psi);
-            if (proc == null) return null;
-            var title = (await proc.StandardOutput.ReadLineAsync())?.Trim();
-            var stderrTask = proc.StandardError.ReadToEndAsync();
-            await proc.WaitForExitAsync();
-            await stderrTask;
-            return string.IsNullOrWhiteSpace(title) ? null : title;
-        }
-        catch { return null; }
-    }
-
-    private async Task<string?> DownloadSubtitlesAsync(string url, string youtubeId)
-    {
-        var outputTemplate = $"/tmp/{youtubeId}.%(ext)s";
-        var psi = new ProcessStartInfo
-        {
-            FileName = "yt-dlp",
-            Arguments = $"--write-auto-sub --sub-lang en --skip-download --no-progress -o \"{outputTemplate}\" \"{url}\"",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-
-        using var proc = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start yt-dlp.");
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
-        var stderrTask = proc.StandardError.ReadToEndAsync();
-        await Task.WhenAll(stdoutTask, stderrTask);
-        await proc.WaitForExitAsync();
-
-        _logger.LogInformation("yt-dlp exit {code} for {id}", proc.ExitCode, youtubeId);
-
-        var vttFiles = Directory.GetFiles("/tmp", $"{youtubeId}*.vtt");
-        return vttFiles.FirstOrDefault();
-    }
-
     private async Task<(int openers, int rhymes)> UpsertResultsAsync(
-        string title, string source, string? filename, string? youtubeId, string? url,
-        List<RawLine> rawLines, List<ExtractedBar> extractedBars)
+        VideoMetaDto video, string artist, List<SidecarBarDto> bars)
     {
         await using var conn = _db.Open();
         await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync();
@@ -393,43 +260,43 @@ public class PipelineService
                 await using var cmd = conn.CreateCommand();
                 cmd.Transaction = tx;
                 cmd.CommandText = @"
-                    INSERT INTO videos (id, title, source, filename, youtube_id, url)
-                    VALUES ($id, $title, $source, $filename, $ytid, $url)";
+                    INSERT INTO videos (id, youtube_id, title, source, url, artist, source_type)
+                    VALUES ($id, $ytid, $title, 'youtube', $url, $artist, 'freestyle')";
                 cmd.Parameters.AddWithValue("$id", videoId);
-                cmd.Parameters.AddWithValue("$title", title);
-                cmd.Parameters.AddWithValue("$source", source);
-                cmd.Parameters.AddWithValue("$filename", (object?)filename ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("$ytid", (object?)youtubeId ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("$url", (object?)url ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$ytid", (object?)video.YoutubeId ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$title", (object?)video.Title ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$url", (object?)video.Url ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$artist", artist);
                 await cmd.ExecuteNonQueryAsync();
             }
 
-            var lineByIndex = rawLines.ToDictionary(l => l.Index);
             int openerCount = 0, rhymeCount = 0;
+            // rhyme_word ids grouped by rhyme_key — bars sharing a key form couplet pairs
+            var byRhymeKey = new Dictionary<string, List<(string wordId, string word)>>();
 
-            foreach (var bar in extractedBars)
+            for (int i = 0; i < bars.Count; i++)
             {
-                lineByIndex.TryGetValue(bar.Index, out var rawLine);
-                var barText = !string.IsNullOrWhiteSpace(bar.BarText) ? bar.BarText : rawLine?.Text ?? "";
-                float? ts = rawLine?.TimestampSeconds;
-
+                var bar = bars[i];
                 var barId = Guid.NewGuid().ToString("N");
                 {
                     await using var cmd = conn.CreateCommand();
                     cmd.Transaction = tx;
                     cmd.CommandText = @"
-                        INSERT INTO bars (id, video_id, text, timestamp_seconds, bar_index)
-                        VALUES ($id, $vid, $text, $ts, $idx)";
+                        INSERT INTO bars (id, video_id, text, timestamp_seconds, end_seconds, bar_index, is_freestyle, speaker)
+                        VALUES ($id, $vid, $text, $ts, $end, $idx, $free, $spk)";
                     cmd.Parameters.AddWithValue("$id", barId);
                     cmd.Parameters.AddWithValue("$vid", videoId);
-                    cmd.Parameters.AddWithValue("$text", barText);
-                    cmd.Parameters.AddWithValue("$ts", (object?)ts ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("$idx", bar.Index);
+                    cmd.Parameters.AddWithValue("$text", bar.Text);
+                    cmd.Parameters.AddWithValue("$ts", bar.Start);
+                    cmd.Parameters.AddWithValue("$end", bar.End);
+                    cmd.Parameters.AddWithValue("$idx", i);
+                    cmd.Parameters.AddWithValue("$free", bar.IsFreestyle ? 1 : 0);
+                    cmd.Parameters.AddWithValue("$spk", (object?)bar.Speaker ?? DBNull.Value);
                     await cmd.ExecuteNonQueryAsync();
                 }
 
                 if (!string.IsNullOrWhiteSpace(bar.Opener)
-                    && barText.StartsWith(bar.Opener, StringComparison.OrdinalIgnoreCase))
+                    && bar.Text.StartsWith(bar.Opener, StringComparison.OrdinalIgnoreCase))
                 {
                     var openerText = bar.Opener.Trim().ToLowerInvariant();
                     string openerId;
@@ -445,7 +312,7 @@ public class PipelineService
                             RETURNING id";
                         cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
                         cmd.Parameters.AddWithValue("$t", openerText);
-                        cmd.Parameters.AddWithValue("$c", barText);
+                        cmd.Parameters.AddWithValue("$c", bar.Text);
                         openerId = (string)(await cmd.ExecuteScalarAsync())!;
                         openerCount++;
                     }
@@ -461,34 +328,28 @@ public class PipelineService
                     await linkCmd.ExecuteNonQueryAsync();
                 }
 
-                if (bar.RhymeWords != null && bar.RhymeWords.Count > 0)
+                var rhymeWord = bar.RhymeWord?.Trim().ToLowerInvariant();
+                if (!string.IsNullOrWhiteSpace(rhymeWord))
                 {
-                    var wordPairs = new List<(string id, string word)>();
-                    var seenWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var rawWord in bar.RhymeWords)
+                    string wordId;
                     {
-                        var word = rawWord.Trim().ToLowerInvariant();
-                        if (string.IsNullOrWhiteSpace(word)) continue;
-                        if (!seenWords.Add(word)) continue; // skip duplicates within the same bar
+                        await using var cmd = conn.CreateCommand();
+                        cmd.Transaction = tx;
+                        cmd.CommandText = @"
+                            INSERT INTO rhyme_words (id, word, phonemes, frequency)
+                            VALUES ($id, $w, $ph, 1)
+                            ON CONFLICT(word) DO UPDATE
+                              SET frequency = frequency + 1
+                            RETURNING id";
+                        cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+                        cmd.Parameters.AddWithValue("$w", rhymeWord);
+                        cmd.Parameters.AddWithValue("$ph", (object?)bar.RhymeKey ?? DBNull.Value);
+                        wordId = (string)(await cmd.ExecuteScalarAsync())!;
+                        rhymeCount++;
+                    }
 
-                        string wordId;
-                        {
-                            await using var cmd = conn.CreateCommand();
-                            cmd.Transaction = tx;
-                            cmd.CommandText = @"
-                                INSERT INTO rhyme_words (id, word, frequency)
-                                VALUES ($id, $w, 1)
-                                ON CONFLICT(word) DO UPDATE
-                                  SET frequency = frequency + 1
-                                RETURNING id";
-                            cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
-                            cmd.Parameters.AddWithValue("$w", word);
-                            wordId = (string)(await cmd.ExecuteScalarAsync())!;
-                            rhymeCount++;
-                            wordPairs.Add((wordId, word));
-                        }
-
-                        await using var rwbCmd = conn.CreateCommand();
+                    await using (var rwbCmd = conn.CreateCommand())
+                    {
                         rwbCmd.Transaction = tx;
                         rwbCmd.CommandText = @"
                             INSERT INTO rhyme_word_bars (word_id, bar_id)
@@ -499,27 +360,38 @@ public class PipelineService
                         await rwbCmd.ExecuteNonQueryAsync();
                     }
 
-                    for (int i = 0; i < wordPairs.Count; i++)
+                    if (!string.IsNullOrWhiteSpace(bar.RhymeKey))
                     {
-                        for (int j = i + 1; j < wordPairs.Count; j++)
-                        {
-                            var (idA, wordA) = wordPairs[i];
-                            var (idB, wordB) = wordPairs[j];
-                            if (idA == idB) continue; // same word, skip self-pair
-                            if (string.Compare(wordA, wordB, StringComparison.Ordinal) > 0)
-                                (idA, idB) = (idB, idA);
+                        if (!byRhymeKey.TryGetValue(bar.RhymeKey, out var list))
+                            byRhymeKey[bar.RhymeKey] = list = new();
+                        list.Add((wordId, rhymeWord));
+                    }
+                }
+            }
 
-                            await using var pairCmd = conn.CreateCommand();
-                            pairCmd.Transaction = tx;
-                            pairCmd.CommandText = @"
-                                INSERT INTO rhyme_pairs (word_a_id, word_b_id, frequency)
-                                VALUES ($a, $b, 1)
-                                ON CONFLICT(word_a_id, word_b_id) DO UPDATE
-                                  SET frequency = frequency + 1";
-                            pairCmd.Parameters.AddWithValue("$a", idA);
-                            pairCmd.Parameters.AddWithValue("$b", idB);
-                            await pairCmd.ExecuteNonQueryAsync();
-                        }
+            // rhyme_pairs: bars in the same video sharing a rhyme_key form couplet pairs
+            foreach (var group in byRhymeKey.Values)
+            {
+                for (int a = 0; a < group.Count; a++)
+                {
+                    for (int b = a + 1; b < group.Count; b++)
+                    {
+                        var (idA, wordA) = group[a];
+                        var (idB, wordB) = group[b];
+                        if (idA == idB) continue; // same word in two bars — no self-pair
+                        if (string.Compare(wordA, wordB, StringComparison.Ordinal) > 0)
+                            (idA, idB) = (idB, idA);
+
+                        await using var pairCmd = conn.CreateCommand();
+                        pairCmd.Transaction = tx;
+                        pairCmd.CommandText = @"
+                            INSERT INTO rhyme_pairs (word_a_id, word_b_id, frequency)
+                            VALUES ($a, $b, 1)
+                            ON CONFLICT(word_a_id, word_b_id) DO UPDATE
+                              SET frequency = frequency + 1";
+                        pairCmd.Parameters.AddWithValue("$a", idA);
+                        pairCmd.Parameters.AddWithValue("$b", idB);
+                        await pairCmd.ExecuteNonQueryAsync();
                     }
                 }
             }

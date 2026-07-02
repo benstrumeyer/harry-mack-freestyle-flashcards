@@ -21,7 +21,7 @@ public class PipelineController : ControllerBase
     [HttpPost("process-url")]
     public async Task<ActionResult<PipelineResultDto>> ProcessUrl([FromBody] ProcessUrlRequest req)
     {
-        var result = await _pipeline.ProcessUrlAsync(req.Url);
+        var result = await _pipeline.ProcessUrlAsync(req.Url, "harry_mack");
         return Ok(result);
     }
 
@@ -44,7 +44,7 @@ public class PipelineController : ControllerBase
             {
                 await using var scope = _scopeFactory.CreateAsyncScope();
                 var pipeline = scope.ServiceProvider.GetRequiredService<PipelineService>();
-                await pipeline.ProcessPlaylistVideosAsync(videoUrls);
+                await pipeline.ProcessPlaylistVideosAsync(videoUrls, "harry_mack");
             }
             finally
             {
@@ -53,13 +53,6 @@ public class PipelineController : ControllerBase
         });
 
         return Accepted(new PlaylistQueuedDto($"Queued {videoUrls.Count} videos for background processing.", videoUrls.Count));
-    }
-
-    [HttpPost("parse-local")]
-    public async Task<ActionResult<PipelineResultDto>> ParseLocal()
-    {
-        var result = await _pipeline.ProcessLocalAsync();
-        return Ok(result);
     }
 
     [HttpDelete("reset")]

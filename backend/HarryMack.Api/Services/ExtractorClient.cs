@@ -4,7 +4,12 @@ using HarryMack.Api.Models;
 
 namespace HarryMack.Api.Services;
 
-public class ExtractorClient(HttpClient http)
+public interface IExtractorClient
+{
+    Task<ExtractResultDto> ExtractAsync(string url, string artist, CancellationToken ct);
+}
+
+public class ExtractorClient(HttpClient http) : IExtractorClient
 {
     public int PollDelayMs { get; set; } = 1500;
 
