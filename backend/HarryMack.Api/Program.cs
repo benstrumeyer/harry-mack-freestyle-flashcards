@@ -1,3 +1,4 @@
+using HarryMack.Api.Data;
 using HarryMack.Api.Services;
 using Npgsql;
 using OpenAI;
@@ -11,6 +12,11 @@ var connectionString = builder.Configuration.GetConnectionString("Default")
     ?? throw new InvalidOperationException("ConnectionStrings:Default is required.");
 var dataSource = NpgsqlDataSource.Create(connectionString);
 builder.Services.AddSingleton(dataSource);
+
+// SQLite (target datastore — Postgres above is removed in a later task)
+var sqliteConnectionString = builder.Configuration.GetConnectionString("Sqlite")
+    ?? "Data Source=freestyle.db";
+builder.Services.AddSingleton(new Db(sqliteConnectionString));
 
 // Gemini (via OpenAI-compatible API) — optional; pipeline features require it
 var geminiKey = builder.Configuration["GEMINI_API_KEY"]
@@ -44,6 +50,9 @@ builder.Services.AddCors(options =>
         policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
 var app = builder.Build();
+
+// SQLite schema bootstrap (file auto-creates on first run)
+await Db.InitSchemaAsync(sqliteConnectionString);
 
 // Auto-migrate: add rhyme_word_bars if it doesn't exist yet
 {
