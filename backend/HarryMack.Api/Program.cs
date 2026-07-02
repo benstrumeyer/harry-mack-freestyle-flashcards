@@ -34,6 +34,8 @@ else
 builder.Services.AddSingleton<TranscriptParser>();
 builder.Services.AddSingleton<LlmExtractor>();
 builder.Services.AddSingleton<PhoneticService>();
+builder.Services.AddHttpClient<ExtractorClient>(c =>
+    c.BaseAddress = new Uri(builder.Configuration["ExtractorBaseUrl"] ?? "http://localhost:8900"));
 builder.Services.AddScoped<PipelineService>();
 
 // Controllers + CORS

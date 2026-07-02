@@ -20,3 +20,10 @@ public record UpdateSavedOpenerRequest(string Text);
 public record BarSourceDto(string? VideoTitle, string? VideoUrl, string? YoutubeId, float? TimestampSeconds, string BarText);
 public record PlaylistQueuedDto(string Message, int VideoCount);
 public record ValidateRhymesResultDto(string Message, int Removed, int Total);
+
+// --- Sidecar (freestyle-extractor) DTOs — bound with JsonNamingPolicy.SnakeCaseLower ---
+public record VideoMetaDto(string? YoutubeId, string? Title, double? DurationSeconds, string? Url);
+public record SidecarBarDto(string Text, double Start, double End, string? Opener,
+    string? RhymeWord, string? RhymeKey, bool IsFreestyle, string? Speaker);
+public record ExtractResultDto(VideoMetaDto Video, List<SidecarBarDto> Bars);
+public record JobDto(string Status, string Stage, double Progress, string? Error, ExtractResultDto? Result);
