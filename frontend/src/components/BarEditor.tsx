@@ -41,6 +41,7 @@ export default function BarEditor({ analysis, videoId }: Props) {
   const [groups, setGroups] = useState<Record<string, number[]>>({}) // key = rhyme sound (or u#)
   const [types, setTypes] = useState<Record<number, string>>({})
   const [cur, setCur] = useState<Pos>({ b: 0, w: 0 })
+  const [anchor, setAnchor] = useState<Pos | null>(null) // range-select anchor (Shift+move)
   const [active, setActive] = useState<string | null>(null) // active family key
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -93,6 +94,26 @@ export default function BarEditor({ analysis, videoId }: Props) {
   const effType = (wi: number) => types[wi] ?? (barLast.has(wi) ? 'end' : null)
   const wiAt = (p: Pos): number | null => bars[p.b]?.[p.w] ?? null
   const curWi = wiAt(cur)
+
+  // ---- range selection (Shift+move) ----
+  const flat = useMemo(() => {
+    const f: { b: number; w: number; wi: number }[] = []
+    bars.forEach((bar, b) => bar.forEach((wi, w) => f.push({ b, w, wi })))
+    return f
+  }, [bars])
+  const posIdx = (p: Pos) => flat.findIndex((x) => x.b === p.b && x.w === p.w)
+  const selRange = useMemo(() => {
+    if (!anchor) return null
+    const i = posIdx(anchor), j = posIdx(cur)
+    if (i < 0 || j < 0) return null
+    return i <= j ? { lo: i, hi: j } : { lo: j, hi: i }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchor, cur, flat])
+  const inSel = (b: number, w: number) => {
+    if (!selRange) return false
+    const idx = flat.findIndex((x) => x.b === b && x.w === w)
+    return idx >= selRange.lo && idx <= selRange.hi
+  }
 
   // ---- navigation ----
   const clampW = (b: number, w: number) => Math.max(0, Math.min(w, (bars[b]?.length ?? 1) - 1))
@@ -186,6 +207,22 @@ export default function BarEditor({ analysis, videoId }: Props) {
     purgeWords(wis)
     setCur((c) => ({ b: Math.max(0, Math.min(c.b, bars.length - 2)), w: 0 })); setDirty(true)
   }
+  // Delete a whole selected range (e.g. a people-talking segment) across bars.
+  function deleteRange() {
+    if (!selRange) return
+    const remove = new Set(flat.slice(selRange.lo, selRange.hi + 1).map((x) => x.wi))
+    setBars((prev) => {
+      const survivors: number[][] = []
+      const remap: number[] = []
+      prev.forEach((bar, oi) => {
+        const nb = bar.filter((wi) => !remove.has(wi))
+        if (nb.length) { remap[oi] = survivors.length; survivors.push(nb) } else remap[oi] = -1
+      })
+      setParas((p) => p.map((oi) => remap[oi]).filter((x): x is number => x != null && x > 0))
+      return survivors
+    })
+    purgeWords(remove); setAnchor(null); setCur({ b: 0, w: 0 }); setDirty(true)
+  }
 
   function onKeyDown(e: React.KeyboardEvent) {
     const k = e.key
@@ -194,7 +231,9 @@ export default function BarEditor({ analysis, videoId }: Props) {
       ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down',
       a: 'left', d: 'right', w: 'up', s: 'down',
     }
-    if (nav[k]) { e.preventDefault(); move(nav[k]!); return }
+    if (nav[k]) { e.preventDefault(); if (e.shiftKey) setAnchor((a) => a ?? cur); else setAnchor(null); move(nav[k]!); return }
+    if (k === 'Escape') { e.preventDefault(); setAnchor(null); return }
+    if ((k === 'Delete' || k === 'Backspace') && selRange) { e.preventDefault(); deleteRange(); return }
     if (k === ' ') { e.preventDefault(); groupCursor(); return }
     if (k === 'q') { e.preventDefault(); cycleFamily(-1); return }
     if (k === 'e') { e.preventDefault(); cycleFamily(1); return }
@@ -244,13 +283,13 @@ export default function BarEditor({ analysis, videoId }: Props) {
   }
   const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 
-  function wordStyle(wi: number, isCur: boolean): React.CSSProperties {
+  function wordStyle(wi: number, isCur: boolean, sel: boolean): React.CSSProperties {
     const gid = gidOfWord.get(wi); const t = effType(wi)
     const hue = gid != null ? families.info.get(gid)?.hue ?? null : null
     const opener = t === 'opener'
     return {
       cursor: 'pointer', padding: '0 3px', borderRadius: 3,
-      background: hue != null ? `hsl(${hue} 75% 50% / 0.42)` : (opener ? 'rgba(120,180,255,0.14)' : (isCur ? 'rgba(255,255,255,0.08)' : undefined)),
+      background: sel ? 'rgba(120,170,255,0.45)' : (hue != null ? `hsl(${hue} 75% 50% / 0.42)` : (opener ? 'rgba(120,180,255,0.14)' : (isCur ? 'rgba(255,255,255,0.08)' : undefined))),
       fontWeight: t === 'end' ? 700 : 400, fontStyle: t === 'slant' ? 'italic' : undefined,
       textDecoration: t === 'internal' || t === 'multi' ? 'underline' : undefined,
       textDecorationStyle: t === 'multi' ? 'double' : t === 'internal' ? 'dotted' : undefined, textUnderlineOffset: '2px',
@@ -264,7 +303,7 @@ export default function BarEditor({ analysis, videoId }: Props) {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: '0.74rem', color: 'var(--color-muted)' }}>
-          <kbd>WASD</kbd> move · <kbd>Space</kbd> rhyme · <kbd>Q/E</kbd> family · <kbd>R</kbd> slant · <kbd>F</kbd> split · <kbd>T</kbd> verse · <kbd>O</kbd> opener · <kbd>G</kbd> del word / <kbd>Shift+G</kbd> del bar · <kbd>Z/X/C</kbd> internal/slant/multi
+          <kbd>WASD</kbd> move · <kbd>Shift+move</kbd> select · <kbd>Del</kbd> delete selection · <kbd>Space</kbd> rhyme · <kbd>Q/E</kbd> family · <kbd>R</kbd> slant · <kbd>F</kbd> split · <kbd>T</kbd> verse · <kbd>O</kbd> opener · <kbd>G</kbd> del word / <kbd>Shift+G</kbd> del bar · <kbd>Z/X/C</kbd> internal/slant/multi
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: '0.72rem', color: 'var(--color-muted)' }}>{status}</span>
@@ -320,7 +359,7 @@ export default function BarEditor({ analysis, videoId }: Props) {
                   return (
                     <span key={wi}>
                       {wIdx > 0 && ' '}
-                      <span onClick={() => onWordClick(bi, wIdx, wi)} style={wordStyle(wi, cur.b === bi && cur.w === wIdx)}>
+                      <span onClick={() => onWordClick(bi, wIdx, wi)} style={wordStyle(wi, cur.b === bi && cur.w === wIdx, inSel(bi, wIdx))}>
                         {meta.get(wi)?.text ?? '?'}{letter && <sub style={{ fontFamily: MONO, fontSize: '0.6em', opacity: 0.8 }}>{letter}</sub>}
                       </span>
                     </span>
