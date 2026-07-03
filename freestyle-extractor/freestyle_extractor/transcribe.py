@@ -2,7 +2,30 @@ from .models import Word
 from . import config
 
 
+def _enable_full_checkpoint_load():
+    """torch>=2.6 defaults torch.load to weights_only=True; whisperx/pyannote
+    VAD + align checkpoints carry omegaconf globals and fail to unpickle.
+    These checkpoints are trusted (whisperx/pyannote releases) -> load fully."""
+    import torch
+    try:
+        from omegaconf.listconfig import ListConfig
+        from omegaconf.dictconfig import DictConfig
+        from omegaconf.base import ContainerMetadata, Metadata
+        torch.serialization.add_safe_globals([ListConfig, DictConfig, ContainerMetadata, Metadata])
+    except Exception:
+        pass
+    if getattr(torch.load, "_full_ckpt_patch", False):
+        return
+    _orig = torch.load
+    def _patched(*a, **k):
+        k["weights_only"] = False
+        return _orig(*a, **k)
+    _patched._full_ckpt_patch = True
+    torch.load = _patched
+
+
 def load_models():
+    _enable_full_checkpoint_load()
     import whisperx
     model = whisperx.load_model(
         config.WHISPER_MODEL, config.DEVICE, compute_type="float16", language="en"
