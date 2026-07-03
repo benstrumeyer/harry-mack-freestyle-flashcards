@@ -35,3 +35,36 @@ public record AnalysisDto(
     Dictionary<int, string> Scheme,
     double Density,
     int DetectorVersion);
+
+// --- API response DTOs (served to the React client; camelCase over the wire) ---
+// These read from the persisted additive tables (transcript_words / rhyme_events /
+// rhyme_groups / rhyme_annotations), NOT from the sidecar JSON.
+
+// One row per video for the Songs list (`GET /api/videos`).
+public record VideoSummaryDto(
+    string Id, string? Title, string? Artist, int BarCount, int WordCount, double? Density);
+
+// One full-transcript word (`transcript_words`).
+public record TranscriptWordDto(
+    int WordIndex, string Text, double Start, double End,
+    double? Score, string? Ipa, List<string>? VowelSeq, string? DeliveredIpa);
+
+// One persisted rhyme event (`rhyme_events`) — carries the group link + detector label.
+public record AnalysisEventDto(
+    int WordIndex, int BarIndex, int IntraBarIndex,
+    string? CanonicalKey, string? DeliveredKey, string? Detector, int? GroupIndex, int Stress);
+
+// One persisted rhyme group (`rhyme_groups`) — hue drives the transcript coloring.
+public record AnalysisGroupDto(int GroupIndex, int Hue, int Size, string? Key);
+
+// Full annotated-transcript payload (`GET /api/videos/{id}/analysis`).
+public record VideoAnalysisDto(
+    VideoSummaryDto Video,
+    List<TranscriptWordDto> Words,
+    List<AnalysisEventDto> Events,
+    List<AnalysisGroupDto> Groups,
+    Dictionary<int, string> Scheme,
+    double Density);
+
+// Result of re-triggering the analyze stage for an existing video.
+public record ReanalyzeResultDto(string Message, int Events, int Groups, double Density);

@@ -7,6 +7,11 @@ namespace HarryMack.Api.Services;
 public interface IExtractorClient
 {
     Task<ExtractResultDto> ExtractAsync(string url, string artist, CancellationToken ct);
+
+    // Re-run only the analyze stage for a URL (sidecar POST /analyze). Default throws so
+    // existing test doubles that only fake extraction keep compiling.
+    Task<AnalysisDto> AnalyzeAsync(string url, CancellationToken ct) =>
+        throw new NotImplementedException();
 }
 
 public class ExtractorClient(HttpClient http) : IExtractorClient
@@ -23,6 +28,21 @@ public class ExtractorClient(HttpClient http) : IExtractorClient
     {
         var enq = await http.PostAsJsonAsync("/extract",
             new { url, artist, source_type = "freestyle" }, ct);
+        return await PollAsync(enq, ct);
+    }
+
+    public async Task<AnalysisDto> AnalyzeAsync(string url, CancellationToken ct)
+    {
+        var enq = await http.PostAsJsonAsync("/analyze",
+            new { url, source_type = "freestyle" }, ct);
+        var result = await PollAsync(enq, ct);
+        return result.Analysis
+            ?? throw new InvalidOperationException("analyze job returned no analysis");
+    }
+
+    // Poll a just-enqueued sidecar job to completion and return its ExtractResult.
+    private async Task<ExtractResultDto> PollAsync(HttpResponseMessage enq, CancellationToken ct)
+    {
         enq.EnsureSuccessStatusCode();
         var jobId = (await enq.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct))
             .GetProperty("job_id").GetString()!;

@@ -211,6 +211,70 @@ public class PipelineService
         return result;
     }
 
+    // Re-run the analyze stage for an already-ingested video and replace its persisted
+    // analysis (full transcript + rhyme events/groups/annotations/bar labels). Returns null
+    // if the video id is unknown. Bars are NOT re-extracted — existing bar rows are reused so
+    // the analysis bar_index values still map onto real bar ids.
+    public async Task<ReanalyzeResultDto?> AnalyzeExistingVideoAsync(string videoId)
+    {
+        string? url;
+        await using (var conn = _db.Open())
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT url FROM videos WHERE id = $id";
+            cmd.Parameters.AddWithValue("$id", videoId);
+            var val = await cmd.ExecuteScalarAsync();
+            if (val is null) return null;               // unknown video
+            url = val is DBNull ? null : (string)val;
+        }
+
+        if (string.IsNullOrWhiteSpace(url))
+            throw new InvalidOperationException($"Video {videoId} has no source URL to re-analyze.");
+
+        var analysis = await _extractor.AnalyzeAsync(url, CancellationToken.None);
+
+        await using var conn2 = _db.Open();
+        await using var tx = (SqliteTransaction)await conn2.BeginTransactionAsync();
+        try
+        {
+            // Clear prior analysis rows (GUID-keyed → would otherwise duplicate on re-run).
+            await using (var del = conn2.CreateCommand())
+            {
+                del.Transaction = tx;
+                del.CommandText = @"
+                    DELETE FROM transcript_words WHERE video_id = $v;
+                    DELETE FROM rhyme_events WHERE video_id = $v;
+                    DELETE FROM rhyme_groups WHERE video_id = $v;";
+                del.Parameters.AddWithValue("$v", videoId);
+                await del.ExecuteNonQueryAsync();
+            }
+
+            // Map the analysis bar_index onto the video's existing bar ids.
+            var barIdByIndex = new Dictionary<int, string>();
+            await using (var barCmd = conn2.CreateCommand())
+            {
+                barCmd.Transaction = tx;
+                barCmd.CommandText = "SELECT bar_index, id FROM bars WHERE video_id = $v";
+                barCmd.Parameters.AddWithValue("$v", videoId);
+                await using var r = await barCmd.ExecuteReaderAsync();
+                while (await r.ReadAsync())
+                    if (!r.IsDBNull(0)) barIdByIndex[r.GetInt32(0)] = r.GetString(1);
+            }
+
+            await PersistAnalysisAsync(conn2, tx, videoId, analysis, barIdByIndex);
+            await tx.CommitAsync();
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
+
+        return new ReanalyzeResultDto(
+            $"Re-analyzed {analysis.Words.Count} words.",
+            analysis.Events.Count, analysis.Groups.Count, analysis.Density);
+    }
+
     // ---- Private helpers ----
 
     private async Task<bool> YoutubeAlreadyProcessedAsync(string youtubeId)

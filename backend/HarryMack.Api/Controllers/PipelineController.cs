@@ -55,6 +55,15 @@ public class PipelineController : ControllerBase
         return Accepted(new PlaylistQueuedDto($"Queued {videoUrls.Count} videos for background processing.", videoUrls.Count));
     }
 
+    [HttpPost("analyze/{videoId}")]
+    public async Task<IActionResult> Analyze(string videoId)
+    {
+        var result = await _pipeline.AnalyzeExistingVideoAsync(videoId);
+        if (result is null)
+            return NotFound($"No video with id {videoId}.");
+        return Ok(result);
+    }
+
     [HttpDelete("reset")]
     public async Task<IActionResult> Reset()
     {
