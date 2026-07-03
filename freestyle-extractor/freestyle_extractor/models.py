@@ -33,6 +33,8 @@ class RhymeEvent(BaseModel):
     delivered_key: str | None = None
     vowel_seq: list[str] = []
     stress: int = 0
+    detector: str | None = None
+    group_index: int | None = None
 
 class RhymeGroup(BaseModel):
     group_index: int
@@ -46,9 +48,19 @@ class VideoMeta(BaseModel):
     duration_seconds: float | None
     url: str | None
 
+class Analysis(BaseModel):
+    words: list[Word] = []
+    events: list[RhymeEvent] = []
+    groups: list[RhymeGroup] = []
+    bar_labels: dict[int, str] = {}
+    scheme: dict[int, str] = {}
+    density: float = 0.0
+    detector_version: int = 0
+
 class ExtractResult(BaseModel):
     video: VideoMeta
     bars: list[Bar]
+    analysis: Analysis | None = None
 
 class ExtractRequest(BaseModel):
     url: str

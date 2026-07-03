@@ -7,3 +7,6 @@ DEMUCS_MODEL = os.getenv("DEMUCS_MODEL", "htdemucs_ft")
 DEVICE = os.getenv("DEVICE", "cuda")
 WORK_DIR = os.getenv("WORK_DIR", os.path.join(tempfile.gettempdir(), "freestyle"))
 HF_TOKEN = os.getenv("HF_TOKEN")  # optional; diarization falls back if absent
+# Delivered (wav2vec2) phoneme keys need a ~1.2GB GPU model download; keep it
+# opt-in so the analyze stage runs (and unit tests pass) without a GPU.
+ENABLE_DELIVERED = os.getenv("ENABLE_DELIVERED", "0").lower() in ("1", "true", "yes")
