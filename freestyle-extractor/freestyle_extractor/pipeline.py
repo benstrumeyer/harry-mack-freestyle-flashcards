@@ -1,4 +1,4 @@
-import os
+import os, sys
 
 from .models import ExtractRequest, ExtractResult, Analysis, Word, Bar, VideoMeta
 from . import config
@@ -27,8 +27,16 @@ def _delivered_for(full_words: list[Word], vocals: str | None) -> list[str | Non
     if not (vocals and config.ENABLE_DELIVERED and os.path.exists(vocals)):
         return none
     try:
-        return delivered_keys(vocals, full_words)
-    except Exception:
+        keys = delivered_keys(vocals, full_words)
+        got = sum(1 for k in keys if k)
+        if got == 0:
+            print(f"[delivered] WARNING: 0/{len(keys)} words got a delivered key "
+                  f"(check wav2vec2 chunking / timestamps)", file=sys.stderr)
+        else:
+            print(f"[delivered] {got}/{len(keys)} words got a delivered key", file=sys.stderr)
+        return keys
+    except Exception as e:
+        print(f"[delivered] FAILED: {type(e).__name__}: {e}", file=sys.stderr)
         return none
 
 

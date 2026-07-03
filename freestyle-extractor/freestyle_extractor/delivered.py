@@ -44,8 +44,14 @@ def load_delivered_model():
 
 
 def _phoneme_frames(vocals_path: str, model):
-    """Run the model and return list of (phoneme, start_s, end_s) frames."""
-    out = model(vocals_path)
+    """Run the model and return list of (phoneme, start_s, end_s) frames.
+
+    Long-form audio (a whole freestyle) MUST be chunked or the CTC pipeline
+    returns no usable char timestamps — pass chunk_length_s/stride_length_s so
+    the pipeline windows the audio and stitches the phoneme timestamps back.
+    """
+    chunk = float(config.DELIVERED_CHUNK_S)
+    out = model(vocals_path, chunk_length_s=chunk, stride_length_s=chunk / 4)
     frames = []
     for ch in out.get("chunks", []):
         ts = ch.get("timestamp") or (None, None)
