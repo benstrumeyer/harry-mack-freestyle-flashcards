@@ -104,6 +104,71 @@ export interface BarSourceDto {
   barText: string
 }
 
+// --- Rap analysis (annotated transcript) ---
+// Mirror the backend response DTOs (Models/AnalysisDtos.cs), served camelCase.
+
+export interface VideoSummaryDto {
+  id: string
+  title: string | null
+  artist: string | null
+  barCount: number
+  wordCount: number
+  density: number | null
+}
+
+export interface TranscriptWordDto {
+  wordIndex: number
+  text: string
+  start: number
+  end: number
+  score: number | null
+  ipa: string | null
+  vowelSeq: string[] | null
+  deliveredIpa: string | null
+}
+
+// Persisted rhyme event (backend AnalysisEventDto) — carries the group link + detector label.
+export interface RhymeEventDto {
+  wordIndex: number
+  barIndex: number
+  intraBarIndex: number
+  canonicalKey: string | null
+  deliveredKey: string | null
+  detector: string | null
+  groupIndex: number | null
+  stress: number
+}
+
+// Persisted rhyme group (backend AnalysisGroupDto) — hue drives transcript coloring.
+export interface RhymeGroupDto {
+  groupIndex: number
+  hue: number
+  size: number
+  key: string | null
+}
+
+export interface VideoAnalysisDto {
+  video: VideoSummaryDto
+  words: TranscriptWordDto[]
+  events: RhymeEventDto[]
+  groups: RhymeGroupDto[]
+  scheme: Record<number, string>
+  density: number
+}
+
+// Per-song rhyme dictionary (backend SongDictionaryDto).
+export interface SongDictionaryGroupDto {
+  groupIndex: number
+  hue: number
+  key: string | null
+  words: string[]
+}
+
+export interface SongDictionaryDto {
+  videoId: string
+  groups: SongDictionaryGroupDto[]
+}
+
 export const api = {
   processUrl: (url: string, artist = 'harry_mack') =>
     post<PipelineResultDto>('/pipeline/process-url', { url, artist }),
@@ -148,4 +213,11 @@ export const api = {
 
   getWordList: (artist = 'harry_mack') =>
     get<{ words: [string, number, string, number][]; openers: string[] }>(`/game/wordlist/${artist}`),
+
+  getVideos: () =>
+    get<VideoSummaryDto[]>('/videos'),
+  getVideoAnalysis: (id: string) =>
+    get<VideoAnalysisDto>(`/videos/${encodeURIComponent(id)}/analysis`),
+  getSongDictionary: (id: string) =>
+    get<SongDictionaryDto>(`/videos/${encodeURIComponent(id)}/rhyme-dictionary`),
 }
