@@ -68,7 +68,15 @@ public sealed class Db(string connectionString)
             created_at TEXT DEFAULT (datetime('now')));
         CREATE TABLE IF NOT EXISTS bar_labels (
             bar_id TEXT REFERENCES bars(id) ON DELETE CASCADE,
-            detector TEXT, scheme TEXT, PRIMARY KEY (bar_id));";
+            detector TEXT, scheme TEXT, PRIMARY KEY (bar_id));
+        CREATE TABLE IF NOT EXISTS rhyme_dictionary (
+            id TEXT PRIMARY KEY, key TEXT, vowel_run INTEGER,
+            artist TEXT, word TEXT, frequency INTEGER DEFAULT 1, song_count INTEGER DEFAULT 1,
+            is_multisyllabic INTEGER DEFAULT 0, is_internal INTEGER DEFAULT 0,
+            UNIQUE (artist, word, key));
+        CREATE TABLE IF NOT EXISTS rhyme_dictionary_pairs (
+            word_a TEXT, word_b TEXT, key TEXT, artist TEXT, frequency INTEGER DEFAULT 1,
+            PRIMARY KEY (word_a, word_b, artist));";
         await cmd.ExecuteNonQueryAsync();
     }
 }

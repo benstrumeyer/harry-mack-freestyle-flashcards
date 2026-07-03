@@ -465,7 +465,10 @@ public class PipelineService
             }
 
             if (analysis is not null)
+            {
                 await PersistAnalysisAsync(conn, tx, videoId, analysis, barIdByIndex);
+                await AggregateDictionaryAsync(conn, tx, artist, analysis);
+            }
 
             await tx.CommitAsync();
             return (openerCount, rhymeCount);
@@ -586,5 +589,106 @@ public class PipelineService
             cmd.Parameters.AddWithValue("$sch", (object?)scheme ?? DBNull.Value);
             await cmd.ExecuteNonQueryAsync();
         }
+    }
+
+    // Rolls this video's rhyme events + groups up into the cross-song rhyme dictionary.
+    // Each ingested video contributes at most +1 to song_count for a given (artist, word,
+    // key), and +N to frequency where N is how often that rhyme word appears in the song.
+    // Co-grouped words seed the rhyme-pair table (normalized so word_a < word_b).
+    private static async Task AggregateDictionaryAsync(
+        SqliteConnection conn, SqliteTransaction tx, string artist, AnalysisDto analysis)
+    {
+        // Fold this song's events into per-(word,key) tallies. A word occurring twice in the
+        // same song bumps frequency by 2 but song_count only once.
+        var entries = new Dictionary<(string word, string key), DictEntry>();
+        foreach (var ev in analysis.Events)
+        {
+            if (string.IsNullOrWhiteSpace(ev.CanonicalKey) || string.IsNullOrWhiteSpace(ev.Text))
+                continue;
+            var word = ev.Text.Trim().ToLowerInvariant();
+            if (word.Length == 0) continue;
+            var vowelRun = ev.VowelSeq?.Count ?? 0;
+            var isMulti = ev.Detector == "multisyllabic" || vowelRun >= 2;
+            var isInternal = ev.Detector == "internal";
+
+            var k = (word, ev.CanonicalKey!);
+            if (!entries.TryGetValue(k, out var e))
+                entries[k] = e = new DictEntry();
+            e.Frequency += 1;
+            e.VowelRun = Math.Max(e.VowelRun, vowelRun);
+            e.IsMultisyllabic |= isMulti;
+            e.IsInternal |= isInternal;
+        }
+
+        foreach (var ((word, key), e) in entries)
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                INSERT INTO rhyme_dictionary
+                  (id, key, vowel_run, artist, word, frequency, song_count, is_multisyllabic, is_internal)
+                VALUES ($id, $key, $vr, $artist, $word, $freq, 1, $multi, $internal)
+                ON CONFLICT(artist, word, key) DO UPDATE SET
+                  frequency = frequency + $freq,
+                  song_count = song_count + 1,
+                  vowel_run = MAX(vowel_run, $vr),
+                  is_multisyllabic = MAX(is_multisyllabic, $multi),
+                  is_internal = MAX(is_internal, $internal)";
+            cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+            cmd.Parameters.AddWithValue("$key", key);
+            cmd.Parameters.AddWithValue("$vr", e.VowelRun);
+            cmd.Parameters.AddWithValue("$artist", artist);
+            cmd.Parameters.AddWithValue("$word", word);
+            cmd.Parameters.AddWithValue("$freq", e.Frequency);
+            cmd.Parameters.AddWithValue("$multi", e.IsMultisyllabic ? 1 : 0);
+            cmd.Parameters.AddWithValue("$internal", e.IsInternal ? 1 : 0);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // Pairs: every co-grouped word combination within this song, normalized a<b.
+        var seenPairs = new HashSet<(string, string)>();
+        foreach (var g in analysis.Groups)
+        {
+            var words = g.WordIndices
+                .Where(wi => wi >= 0 && wi < analysis.Words.Count)
+                .Select(wi => analysis.Words[wi].Text.Trim().ToLowerInvariant())
+                .Where(w => w.Length > 0)
+                .Distinct()
+                .ToList();
+
+            for (int a = 0; a < words.Count; a++)
+            {
+                for (int b = a + 1; b < words.Count; b++)
+                {
+                    var wa = words[a];
+                    var wb = words[b];
+                    if (wa == wb) continue;
+                    if (string.CompareOrdinal(wa, wb) > 0) (wa, wb) = (wb, wa);
+                    if (!seenPairs.Add((wa, wb))) continue; // one bump per song per pair
+
+                    await using var pairCmd = conn.CreateCommand();
+                    pairCmd.Transaction = tx;
+                    pairCmd.CommandText = @"
+                        INSERT INTO rhyme_dictionary_pairs (word_a, word_b, key, artist, frequency)
+                        VALUES ($a, $b, $key, $artist, 1)
+                        ON CONFLICT(word_a, word_b, artist) DO UPDATE SET
+                          frequency = frequency + 1, key = $key";
+                    pairCmd.Parameters.AddWithValue("$a", wa);
+                    pairCmd.Parameters.AddWithValue("$b", wb);
+                    pairCmd.Parameters.AddWithValue("$key", (object?)g.Key ?? DBNull.Value);
+                    pairCmd.Parameters.AddWithValue("$artist", artist);
+                    await pairCmd.ExecuteNonQueryAsync();
+                }
+            }
+        }
+    }
+
+    // Mutable per-(word,key) accumulator used while folding one song's events.
+    private sealed class DictEntry
+    {
+        public int Frequency;
+        public int VowelRun;
+        public bool IsMultisyllabic;
+        public bool IsInternal;
     }
 }
