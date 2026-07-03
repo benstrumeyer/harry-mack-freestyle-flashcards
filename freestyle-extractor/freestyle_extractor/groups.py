@@ -14,8 +14,27 @@ Produces: build_groups(events) -> list[RhymeGroup],
           scheme_labels(events, groups) -> dict[int, str].
 """
 
+import re
+
 from .models import RhymeEvent, RhymeGroup
 from .detectors import bar_final_events, LOOKBACK_BARS
+
+# Function words that are almost never an intentional rhyme payload — they create
+# huge spurious groups (e.g. every "a"/"the"/"to"). Content-word rhymes on short
+# words (my/by/fly, play/hey/they) are intentionally NOT stopped.
+_STOPWORDS = {
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "at", "as", "is", "it",
+    "i", "im", "uh", "um", "oh", "hmm", "mm", "ah", "ya", "y'all",
+}
+
+# A small, visually distinct hue palette, reused across groups. Far more legible
+# than 70 hues spaced 5° apart (which all look identical).
+_PALETTE = [8, 205, 130, 45, 280, 165, 95, 320, 235, 58, 300, 185]
+
+
+def _norm(text: str) -> str:
+    """Lowercased word with surrounding punctuation stripped (keeps apostrophes)."""
+    return re.sub(r"[^a-z']", "", text.lower())
 
 
 def _find(parent: dict[int, int], x: int) -> int:
@@ -39,12 +58,20 @@ def build_groups(events: list[RhymeEvent]) -> list[RhymeGroup]:
     int(360 * i / n) over the n groups. `key` is a representative shared key
     (first canonical key present among the members, else first delivered key).
     """
-    parent = {e.word_index: e.word_index for e in events}
+    by_index = {e.word_index: e for e in events}
 
-    # Link every pair of events that share a canonical key, then a delivered key.
+    # Only content words carry rhymes: drop stopwords and non-alphabetic tokens.
+    def _carrier(e: RhymeEvent) -> bool:
+        w = _norm(e.text)
+        return bool(w) and w not in _STOPWORDS
+
+    carriers = [e for e in events if _carrier(e)]
+    parent = {e.word_index: e.word_index for e in carriers}
+
+    # Link carriers that share a canonical key, then a delivered key.
     for key_attr in ("canonical_key", "delivered_key"):
         buckets: dict[str, list[int]] = {}
-        for e in events:
+        for e in carriers:
             k = getattr(e, key_attr)
             if k:
                 buckets.setdefault(k, []).append(e.word_index)
@@ -53,16 +80,18 @@ def build_groups(events: list[RhymeEvent]) -> list[RhymeGroup]:
             for other in members[1:]:
                 _union(parent, first, other)
 
-    by_index = {e.word_index: e for e in events}
-
     # Gather components in event order so first-appearance is preserved.
     comps: dict[int, list[int]] = {}
-    for e in events:
+    for e in carriers:
         root = _find(parent, e.word_index)
         comps.setdefault(root, []).append(e.word_index)
 
-    # Keep only real groups (>= 2 members), ordered by first appearance.
-    ordered = [wis for wis in comps.values() if len(wis) >= 2]
+    # A real group needs >= 2 DISTINCT words (so "up up up" repetition is not a
+    # rhyme), ordered by first appearance.
+    def _distinct(wis: list[int]) -> int:
+        return len({_norm(by_index[wi].text) for wi in wis})
+
+    ordered = [wis for wis in comps.values() if _distinct(wis) >= 2]
     ordered.sort(key=lambda wis: min(wis))
 
     n = len(ordered)
@@ -82,7 +111,7 @@ def build_groups(events: list[RhymeEvent]) -> list[RhymeGroup]:
                     break
         groups.append(RhymeGroup(
             group_index=i,
-            hue=int(360 * i / n),
+            hue=_PALETTE[i % len(_PALETTE)],
             word_indices=sorted(wis),
             key=key,
         ))

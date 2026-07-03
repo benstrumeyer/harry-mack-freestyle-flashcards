@@ -18,7 +18,7 @@ function fmtTimestamp(s: number): string {
 interface BarBlock {
   barIndex: number | null
   start: number
-  words: { wordIndex: number; text: string; hue: number | null; detector: string | null }[]
+  words: { wordIndex: number; text: string; hue: number | null; groupKey: string | null; detector: string | null }[]
 }
 
 /**
@@ -33,7 +33,8 @@ export default function AnnotatedTranscript({ analysis }: Props) {
     const eventByWord = new Map<number, RhymeEventDto>()
     for (const e of events) eventByWord.set(e.wordIndex, e)
     const hueByGroup = new Map<number, number>()
-    for (const g of groups) hueByGroup.set(g.groupIndex, g.hue)
+    const keyByGroup = new Map<number, string>()
+    for (const g of groups) { hueByGroup.set(g.groupIndex, g.hue); keyByGroup.set(g.groupIndex, g.key ?? '') }
 
     const ordered = [...words].sort((a, b) => a.wordIndex - b.wordIndex)
     const out: BarBlock[] = []
@@ -47,8 +48,10 @@ export default function AnnotatedTranscript({ analysis }: Props) {
         block = { barIndex: currentBar, start: w.start, words: [] }
         out.push(block)
       }
-      const hue = ev && ev.groupIndex != null ? hueByGroup.get(ev.groupIndex) ?? null : null
-      block.words.push({ wordIndex: w.wordIndex, text: w.text, hue, detector: ev?.detector ?? null })
+      const gi = ev && ev.groupIndex != null ? ev.groupIndex : null
+      const hue = gi != null ? hueByGroup.get(gi) ?? null : null
+      const groupKey = gi != null ? keyByGroup.get(gi) ?? null : null
+      block.words.push({ wordIndex: w.wordIndex, text: w.text, hue, groupKey, detector: ev?.detector ?? null })
     }
     return out
   }, [words, events, groups])
@@ -80,7 +83,7 @@ export default function AnnotatedTranscript({ analysis }: Props) {
               {block.words.map((w, wi) => (
                 <span key={w.wordIndex}>
                   {wi > 0 && ' '}
-                  <RhymeToken text={w.text} hue={w.hue} detector={w.detector} />
+                  <RhymeToken text={w.text} hue={w.hue} groupKey={w.groupKey} detector={w.detector} />
                 </span>
               ))}
             </p>

@@ -8,17 +8,18 @@ afterEach(() => {
 })
 
 describe('RhymeToken', () => {
-  it('applies an hsl background when a hue is provided', () => {
+  it('applies an hsl background and a rhyme-sound tooltip when a hue is provided', () => {
     const { container } = render(
-      <RhymeToken text="explore" hue={120} detector="perfect-end" />,
+      <RhymeToken text="explore" hue={120} groupKey="o@" detector="perfect-end" />,
     )
     const span = container.querySelector('span') as HTMLSpanElement
     expect(span).not.toBeNull()
     expect(span.textContent).toBe('explore')
-    // jsdom's CSSOM normalizes hsl(...) to rgba(...); assert the tint (0.35 alpha) applied.
+    // jsdom's CSSOM normalizes hsl(...) to rgba(...); assert the tint (0.45 alpha) applied.
     expect(span.style.background).not.toBe('')
-    expect(span.style.background).toContain('0.35')
-    expect(span.title).toBe('perfect-end')
+    expect(span.style.background).toContain('0.45')
+    // tooltip reveals the shared rhyme sound + detector type
+    expect(span.title).toBe('rhymes: o@ · perfect-end')
   })
 
   it('renders a plain span with no background when hue is null', () => {

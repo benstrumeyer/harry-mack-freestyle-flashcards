@@ -15,26 +15,29 @@ export const DETECTORS: DetectorInfo[] = [
   { detector: 'none', label: 'None', description: 'No detected rhyme relationship', hue: 0 },
 ]
 
-/** Static legend of the six fixed rhyme-pattern detectors and their swatches. */
+/**
+ * Legend for the annotated transcript. The important message first: word COLORS
+ * mark rhyme groups (words sharing a color rhyme with each other) — colors are
+ * not per-detector. The six detector *types* are listed as a reference for the
+ * per-word hover tooltip.
+ */
 export default function DetectorLegend() {
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', fontSize: '0.85rem' }}>
-      {DETECTORS.map((d) => (
-        <div key={d.detector} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }} title={d.description}>
-          <span
-            data-swatch={d.detector}
-            style={{
-              display: 'inline-block',
-              width: '14px',
-              height: '14px',
-              borderRadius: '3px',
-              background: d.detector === 'none' ? 'transparent' : `hsl(${d.hue} 70% 45% / 0.55)`,
-              border: d.detector === 'none' ? '1px solid currentColor' : 'none',
-            }}
-          />
-          <span>{d.label}</span>
-        </div>
-      ))}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.8rem', maxWidth: '46rem' }}>
+      <div style={{ color: 'var(--color-muted)' }}>
+        <strong style={{ color: 'var(--color-text)' }}>Colors = rhyme groups</strong>
+        {' '}— words sharing a color rhyme with each other. Hover a word for its rhyme sound &amp; type.
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', color: 'var(--color-muted)' }}>
+        <span>Types:</span>
+        {DETECTORS.filter((d) => d.detector !== 'none').map((d) => (
+          <span key={d.detector} data-swatch={d.detector} title={d.description}
+                style={{ borderBottom: '2px solid hsl(' + d.hue + ' 70% 55%)', paddingBottom: '1px' }}>
+            {d.label}
+          </span>
+        ))}
+        <span data-swatch="none" title="No detected rhyme relationship">None</span>
+      </div>
     </div>
   )
 }
