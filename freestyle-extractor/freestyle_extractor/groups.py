@@ -32,9 +32,59 @@ _STOPWORDS = {
 _PALETTE = [8, 205, 130, 45, 280, 165, 95, 320, 235, 58, 300, 185]
 
 
+# Multisyllabic / multi-word rhyme detection (Raplyzer). A run of >= this many
+# identical vowels across word boundaries is a real multisyllabic rhyme (e.g.
+# "stereo hype" == "stereotype"); shorter runs are covered by the coda-tail keys
+# and would over-merge here. Tuned on the Harry Mack corpus.
+VOWEL_RUN_MIN = 3
+VOWEL_RUN_WINDOW = 20
+
+
 def _norm(text: str) -> str:
     """Lowercased word with surrounding punctuation stripped (keeps apostrophes)."""
     return re.sub(r"[^a-z']", "", text.lower())
+
+
+def _norm_vowel(v: str) -> str:
+    return v.replace(":", "").replace("ˈ", "").replace("ˌ", "").strip()
+
+
+def suggest_vowel_runs(events: list[RhymeEvent]) -> list[dict]:
+    """Multisyllabic / multi-word rhyme SUGGESTIONS via matching vowel runs
+    (>= VOWEL_RUN_MIN) across word boundaries — e.g. "stereo hype" == "stereotype".
+
+    Returns pairwise suggestions (NOT global groups — transitively unioning these
+    over-merges): each is {"a": [word_indices], "b": [word_indices], "run": str}.
+    Feeds the human-in-the-loop annotation UI as candidate rhymes to confirm."""
+    ev = sorted(events, key=lambda e: e.word_index)
+    stream: list[tuple[str, int]] = []
+    for e in ev:
+        for v in (e.vowel_seq or []):
+            nv = _norm_vowel(v)
+            if nv:
+                stream.append((nv, e.word_index))
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    n = len(stream)
+    for i in range(n):
+        best_L, best_j = 0, -1
+        for j in range(i - 1, max(-1, i - VOWEL_RUN_WINDOW) - 1, -1):
+            L = 0
+            while (i - L >= 0 and j - L >= 0 and j - L != i
+                   and stream[i - L][0] == stream[j - L][0]):
+                L += 1
+            if L >= VOWEL_RUN_MIN and j < i - L + 1 and L > best_L:
+                best_L, best_j = L, j
+        if best_L >= VOWEL_RUN_MIN:
+            i0, j0 = i - best_L + 1, best_j - best_L + 1
+            a = sorted({stream[k][1] for k in range(j0, best_j + 1)})
+            b = sorted({stream[k][1] for k in range(i0, i + 1)})
+            key = (tuple(a), tuple(b))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"a": a, "b": b, "run": "".join(stream[k][0] for k in range(i0, i + 1))})
+    return out
 
 
 def _find(parent: dict[int, int], x: int) -> int:
@@ -79,6 +129,11 @@ def build_groups(events: list[RhymeEvent]) -> list[RhymeGroup]:
             first = members[0]
             for other in members[1:]:
                 _union(parent, first, other)
+
+    # NOTE: vowel-run linking (_link_vowel_runs) is NOT applied to global grouping
+    # — transitively unioning matched runs bridges the large coda-tail families
+    # into one blob. Instead `suggest_vowel_runs()` exposes the matches as
+    # multisyllabic-rhyme SUGGESTIONS for the human-in-the-loop annotation UI.
 
     # Gather components in event order so first-appearance is preserved.
     comps: dict[int, list[int]] = {}
