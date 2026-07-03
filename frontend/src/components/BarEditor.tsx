@@ -45,6 +45,8 @@ export default function BarEditor({ analysis, videoId }: Props) {
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
+  const [engine, setEngine] = useState<'local' | 'ensemble' | 'ai'>('ensemble')
+  const [autoBusy, setAutoBusy] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const autoSegment = useMemo(() => (): number[][] => {
@@ -222,6 +224,24 @@ export default function BarEditor({ analysis, videoId }: Props) {
     } catch { setStatus('save failed') } finally { setSaving(false) }
   }
   function reset() { setBars(autoSegment()); setParas([]); setCur({ b: 0, w: 0 }); setDirty(true); setStatus('re-split — save to keep') }
+
+  // Auto-annotate: fetch a first-pass DRAFT from the selected engine and pre-fill
+  // bars + groups + types (openers) as editable SUGGESTIONS. Nothing is persisted
+  // and the user's saved annotation is untouched until they review and press Save.
+  const ENGINE_LABEL: Record<'local' | 'ensemble' | 'ai', string> = { local: 'Local', ensemble: 'Ensemble', ai: 'AI draft' }
+  async function autoAnnotate() {
+    setAutoBusy(true); setStatus(`fetching ${ENGINE_LABEL[engine]} draft…`)
+    try {
+      const draft = await api.getAutoAnnotate(videoId, engine)
+      if (!draft) { setStatus(engine === 'ai' ? 'no AI draft stored yet for this video' : 'no draft returned'); return }
+      if (draft.bars && draft.bars.length) setBars(draft.bars)
+      setGroups(draft.groups ?? {})
+      setParas(draft.paras ?? [])
+      setTypes(Object.fromEntries(Object.entries(draft.types ?? {}).map(([k, v]) => [Number(k), v])))
+      setCur({ b: 0, w: 0 }); setActive(null); setDirty(true)
+      setStatus(`${ENGINE_LABEL[engine]} suggestion — review & edit, then Save`)
+    } catch { setStatus('auto-annotate failed') } finally { setAutoBusy(false) }
+  }
   const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 
   function wordStyle(wi: number, isCur: boolean): React.CSSProperties {
@@ -248,6 +268,15 @@ export default function BarEditor({ analysis, videoId }: Props) {
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: '0.72rem', color: 'var(--color-muted)' }}>{status}</span>
+        <select
+          aria-label="Auto-annotate engine" value={engine}
+          onChange={(e) => setEngine(e.target.value as 'local' | 'ensemble' | 'ai')}
+          style={{ fontFamily: MONO, fontSize: '0.72rem', padding: '3px 6px', borderRadius: 5, border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-muted)' }}>
+          <option value="local">Local</option>
+          <option value="ensemble">Ensemble</option>
+          <option value="ai">AI draft</option>
+        </select>
+        <button onClick={autoAnnotate} disabled={autoBusy} style={btn(!autoBusy)}>{autoBusy ? 'Drafting…' : 'Auto-annotate'}</button>
         <button onClick={reset} style={btn(false)}>Re-split</button>
         <button onClick={save} disabled={saving || !dirty} style={btn(dirty && !saving)}>{saving ? 'Saving…' : 'Save'}</button>
       </div>

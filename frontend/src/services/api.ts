@@ -215,6 +215,16 @@ export const api = {
     })
     if (!res.ok) throw new Error(`PUT annotation: ${res.status}`)
   },
+  // Auto-annotate first pass (never persisted). engine: local | ensemble | ai.
+  // 'ai' returns the stored Claude-Code draft (null/204 when none exists);
+  // local/ensemble return a sidecar-computed draft. The editor treats the
+  // result as an editable SUGGESTION — it never overwrites a saved annotation.
+  getAutoAnnotate: async (id: string, engine: 'local' | 'ensemble' | 'ai'): Promise<UserAnnotationDto | null> => {
+    const res = await fetch(`${BASE}/videos/${encodeURIComponent(id)}/auto-annotate?engine=${engine}`)
+    if (res.status === 204) return null
+    if (!res.ok) throw new Error(`GET auto-annotate: ${res.status}`)
+    return res.json() as Promise<UserAnnotationDto>
+  },
 
   processUrl: (url: string, artist = 'harry_mack') =>
     post<PipelineResultDto>('/pipeline/process-url', { url, artist }),
