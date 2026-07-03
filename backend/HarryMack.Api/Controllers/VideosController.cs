@@ -2,6 +2,7 @@ using System.Text.Json;
 using HarryMack.Api.Data;
 using HarryMack.Api.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 
 namespace HarryMack.Api.Controllers;
 
@@ -209,6 +210,73 @@ public class VideosController : ControllerBase
         cmd.Parameters.AddWithValue("$paras", JsonSerializer.Serialize(body.Paras ?? new List<int>()));
         cmd.Parameters.AddWithValue("$types", JsonSerializer.Serialize(body.Types ?? new Dictionary<string, string>()));
         await cmd.ExecuteNonQueryAsync();
+
+        // Feed the user's confirmed rhyme groups straight into the rhyme dictionary
+        // (ground-truth labels → the database that powers the Rhyme Game).
+        await FeedDictionaryAsync(conn, id, body.Groups);
         return NoContent();
+    }
+
+    // Aggregate the user's saved rhyme groups (keyed by rhyme sound) into
+    // rhyme_dictionary + rhyme_dictionary_pairs for the video's artist.
+    private static async Task FeedDictionaryAsync(SqliteConnection conn, string videoId,
+        Dictionary<string, List<int>> groups)
+    {
+        if (groups.Count == 0) return;
+
+        string artist = "harry_mack";
+        var wordText = new Dictionary<int, string>();
+        await using (var vc = conn.CreateCommand())
+        {
+            vc.CommandText = "SELECT COALESCE(artist,'harry_mack') FROM videos WHERE id=$id";
+            vc.Parameters.AddWithValue("$id", videoId);
+            if (await vc.ExecuteScalarAsync() is string a && a.Length > 0) artist = a;
+        }
+        await using (var wc = conn.CreateCommand())
+        {
+            wc.CommandText = "SELECT word_index, text FROM transcript_words WHERE video_id=$id";
+            wc.Parameters.AddWithValue("$id", videoId);
+            await using var r = await wc.ExecuteReaderAsync();
+            while (await r.ReadAsync()) wordText[r.GetInt32(0)] = r.GetString(1).Trim().ToLowerInvariant();
+        }
+
+        foreach (var (key, wis) in groups)
+        {
+            var words = wis.Where(wordText.ContainsKey).Select(wi => wordText[wi])
+                           .Where(w => w.Length > 0).Distinct().ToList();
+            if (words.Count < 2) continue; // a rhyme needs >= 2 distinct words
+            var multi = key.Length >= 3 ? 1 : 0;
+            foreach (var w in words)
+            {
+                await using var dc = conn.CreateCommand();
+                dc.CommandText = @"
+                    INSERT INTO rhyme_dictionary (id, key, vowel_run, artist, word, frequency, song_count, is_multisyllabic, is_internal)
+                    VALUES ($id, $key, $vr, $artist, $word, 1, 1, $multi, 0)
+                    ON CONFLICT(artist, word, key) DO UPDATE SET
+                      frequency = frequency + 1, is_multisyllabic = MAX(is_multisyllabic, $multi)";
+                dc.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+                dc.Parameters.AddWithValue("$key", key);
+                dc.Parameters.AddWithValue("$vr", multi);
+                dc.Parameters.AddWithValue("$artist", artist);
+                dc.Parameters.AddWithValue("$word", w);
+                dc.Parameters.AddWithValue("$multi", multi);
+                await dc.ExecuteNonQueryAsync();
+            }
+            for (int a = 0; a < words.Count; a++)
+                for (int b = a + 1; b < words.Count; b++)
+                {
+                    var (wa, wb) = string.CompareOrdinal(words[a], words[b]) <= 0 ? (words[a], words[b]) : (words[b], words[a]);
+                    await using var pc = conn.CreateCommand();
+                    pc.CommandText = @"
+                        INSERT INTO rhyme_dictionary_pairs (word_a, word_b, key, artist, frequency)
+                        VALUES ($a, $b, $key, $artist, 1)
+                        ON CONFLICT(word_a, word_b, artist) DO UPDATE SET frequency = frequency + 1, key = $key";
+                    pc.Parameters.AddWithValue("$a", wa);
+                    pc.Parameters.AddWithValue("$b", wb);
+                    pc.Parameters.AddWithValue("$key", key);
+                    pc.Parameters.AddWithValue("$artist", artist);
+                    await pc.ExecuteNonQueryAsync();
+                }
+        }
     }
 }
