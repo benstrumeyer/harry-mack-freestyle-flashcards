@@ -24,13 +24,19 @@
   `training.build_pairs`). TDD: model learns CMUdict rhyme (held-out AUC ≥ 0.9 on a small subset).
 - Wire `predict_rhyme` as an extra feature/signal alongside the existing phonetic keys.
 
-## Phase 2 — Powerful LLM auto-annotate (Anthropic)
-- `freestyle-extractor/freestyle_extractor/llm_annotate.py`: build a prompt from the transcript
-  + our per-word phonetic keys; call Claude with STRUCTURED OUTPUT (tool schema) → rhyme groups
-  (keyed by sound), per-bar scheme, types, openers. Gated on `ANTHROPIC_API_KEY`; returns the
-  same shape as `UserAnnotationDto`. TDD with a MOCKED anthropic client (no live call).
-- Sidecar route `POST /annotate-llm` (reuses cached words); `.NET POST /api/videos/{id}/auto-annotate?engine=llm`
-  proxies + returns the draft annotation (does NOT overwrite the user's saved one).
+## Phase 2 — Powerful LLM auto-annotate (Claude Code + Max plan, ToS-clean)
+- The app does NOT call Claude (using a Max subscription from a backend service violates
+  Anthropic's Consumer ToS; only an API key is supported for backends — which we're avoiding).
+- Instead the LLM pass is done by **Claude Code** (the user's Max plan, its intended context):
+  Claude Code reads the transcript + phonetic keys, produces a structured rhyme annotation
+  (same shape as `UserAnnotationDto`), and stores it as an **AI DRAFT** via a new endpoint.
+- Backend: add `ai_draft_json` to `user_annotations` (or a `user_annotations_ai` row);
+  `PUT /api/videos/{id}/ai-draft` (Claude Code pushes a draft) and
+  `GET /api/videos/{id}/ai-draft` (editor loads it). The AI draft NEVER overwrites the user's
+  saved annotation — it's a suggestion source. No `anthropic` SDK, no API key.
+- `scripts/prompt_bundle.py`: dump a video's transcript + per-word phonetic keys as a compact
+  prompt bundle (so Claude Code has exactly what it needs to annotate), and a loader that PUTs
+  a produced annotation to `/ai-draft`.
 
 ## Phase 3 — Hybrid ensemble (max precision)
 - `freestyle-extractor/freestyle_extractor/ensemble.py`: combine signals per candidate pair —
