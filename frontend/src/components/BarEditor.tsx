@@ -4,19 +4,18 @@ import { api } from '../services/api'
 
 const MONO = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
 const USER_PALETTE = [8, 205, 130, 45, 280, 165, 95, 320, 235, 58, 300, 185]
-// Word-native hotkeys → rhyme annotation type.
 const TYPE_KEYS: Record<string, string> = { b: 'end', u: 'internal', i: 'slant', m: 'multi' }
 
 interface Props { analysis: VideoAnalysisDto; videoId: string }
+type Pos = { b: number; w: number }
 
 /**
- * Rap-annotation editor (Word/markdown style).
- *  BARS: click a word, Enter splits the bar there, Backspace at a bar start joins,
- *        Shift+Enter toggles a verse (paragraph) break. Bar-final word auto = end-rhyme.
- *  RHYMES: click two words to rhyme them (same color group); click more to extend;
- *        click a grouped word to remove. Ctrl/Cmd+B/U/I/M set the type on the
- *        selected word: B=end, U=internal, I=slant, M=multisyllabic.
- * Bars + verses + groups + types persist per video (source of truth + labels).
+ * Rap-annotation editor. A single arrow-navigable cursor works in both modes:
+ *   ← → move word (wrap across bars) · ↑ ↓ move line.
+ * BARS:  Enter split · Shift+Enter verse · Backspace(at bar start) join.
+ * RHYMES: Space (or click) the cursor word to link it to the anchor = rhyme it;
+ *   Ctrl/Cmd+B/U/I/M set type (end/internal/slant/multi) on the cursor word.
+ * Bar-final word auto = end-rhyme. Bars+verses+groups+types persist per video.
  */
 export default function BarEditor({ analysis, videoId }: Props) {
   const words = useMemo(() => [...analysis.words].sort((a, b) => a.wordIndex - b.wordIndex), [analysis.words])
@@ -28,11 +27,11 @@ export default function BarEditor({ analysis, videoId }: Props) {
 
   const [mode, setMode] = useState<'bars' | 'rhymes'>('bars')
   const [bars, setBars] = useState<number[][]>([])
-  const [paras, setParas] = useState<number[]>([])            // bar indices that start a verse
+  const [paras, setParas] = useState<number[]>([])
   const [groups, setGroups] = useState<Record<string, number[]>>({})
-  const [types, setTypes] = useState<Record<number, string>>({})  // wordIndex -> type
-  const [caret, setCaret] = useState<{ b: number; w: number }>({ b: 0, w: 0 })
-  const [selWi, setSelWi] = useState<number | null>(null)    // selected word (rhymes mode)
+  const [types, setTypes] = useState<Record<number, string>>({})
+  const [cur, setCur] = useState<Pos>({ b: 0, w: 0 })
+  const [anchor, setAnchor] = useState<number | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
@@ -69,124 +68,146 @@ export default function BarEditor({ analysis, videoId }: Props) {
     for (const [gid, wis] of Object.entries(groups)) for (const wi of wis) m.set(wi, gid)
     return m
   }, [groups])
-  // last word of each bar → auto "end" rhyme
   const barLastWord = useMemo(() => {
-    const s = new Set<number>()
-    for (const bar of bars) if (bar.length) s.add(bar[bar.length - 1]!)
-    return s
+    const s = new Set<number>(); for (const bar of bars) if (bar.length) s.add(bar[bar.length - 1]!); return s
   }, [bars])
   const effType = (wi: number) => types[wi] ?? (barLastWord.has(wi) ? 'end' : null)
+  const wiAt = (p: Pos): number | null => bars[p.b]?.[p.w] ?? null
+  const curWi = wiAt(cur)
 
-  // ---- bars mode ----
-  function splitAtCaret() {
+  // ---- cursor navigation ----
+  const clampW = (b: number, w: number) => Math.max(0, Math.min(w, (bars[b]?.length ?? 1) - 1))
+  function move(dir: 'left' | 'right' | 'up' | 'down') {
+    setCur((c) => {
+      if (dir === 'left') {
+        if (c.w > 0) return { b: c.b, w: c.w - 1 }
+        if (c.b > 0) return { b: c.b - 1, w: (bars[c.b - 1]?.length ?? 1) - 1 }
+        return c
+      }
+      if (dir === 'right') {
+        if (c.w < (bars[c.b]?.length ?? 1) - 1) return { b: c.b, w: c.w + 1 }
+        if (c.b < bars.length - 1) return { b: c.b + 1, w: 0 }
+        return c
+      }
+      if (dir === 'up' && c.b > 0) return { b: c.b - 1, w: clampW(c.b - 1, c.w) }
+      if (dir === 'down' && c.b < bars.length - 1) return { b: c.b + 1, w: clampW(c.b + 1, c.w) }
+      return c
+    })
+  }
+
+  // ---- bars editing ----
+  function splitAtCur() {
     setBars((prev) => {
-      const bar = prev[caret.b]; if (!bar || caret.w >= bar.length - 1) return prev
-      const b = prev.map((x) => [...x]); const after = b[caret.b]!.slice(caret.w + 1)
-      b[caret.b] = b[caret.b]!.slice(0, caret.w + 1); b.splice(caret.b + 1, 0, after)
-      setParas((p) => p.map((x) => (x > caret.b ? x + 1 : x)))  // keep verse marks aligned
+      const bar = prev[cur.b]; if (!bar || cur.w >= bar.length - 1) return prev
+      const b = prev.map((x) => [...x]); const after = b[cur.b]!.slice(cur.w + 1)
+      b[cur.b] = b[cur.b]!.slice(0, cur.w + 1); b.splice(cur.b + 1, 0, after)
+      setParas((p) => p.map((x) => (x > cur.b ? x + 1 : x)))
       return b
     })
-    setCaret((c) => ({ b: c.b + 1, w: 0 })); setDirty(true)
+    setCur((c) => ({ b: c.b + 1, w: 0 })); setDirty(true)
   }
   function joinWithPrev() {
-    if (caret.b === 0 || caret.w !== 0) return
+    if (cur.b === 0 || cur.w !== 0) return
     setBars((prev) => {
-      const b = prev.map((x) => [...x]); const prevLen = b[caret.b - 1]!.length
-      b[caret.b - 1] = [...b[caret.b - 1]!, ...b[caret.b]!]; b.splice(caret.b, 1)
-      setParas((p) => p.filter((x) => x !== caret.b).map((x) => (x > caret.b ? x - 1 : x)))
-      setCaret({ b: caret.b - 1, w: prevLen }); return b
+      const b = prev.map((x) => [...x]); const prevLen = b[cur.b - 1]!.length
+      b[cur.b - 1] = [...b[cur.b - 1]!, ...b[cur.b]!]; b.splice(cur.b, 1)
+      setParas((p) => p.filter((x) => x !== cur.b).map((x) => (x > cur.b ? x - 1 : x)))
+      setCur({ b: cur.b - 1, w: prevLen }); return b
     })
     setDirty(true)
   }
   function toggleVerse() {
-    if (caret.b === 0) return
-    setParas((p) => (p.includes(caret.b) ? p.filter((x) => x !== caret.b) : [...p, caret.b].sort((a, b) => a - b)))
+    if (cur.b === 0) return
+    setParas((p) => (p.includes(cur.b) ? p.filter((x) => x !== cur.b) : [...p, cur.b].sort((a, b) => a - b)))
     setDirty(true)
   }
 
-  // ---- rhymes mode ----
+  // ---- rhyme linking + types ----
   function firstFreeGid(g: Record<string, number[]>) { let n = 0; while (g[`g${n}`]) n++; return `g${n}` }
-  function onRhymeClick(wi: number) {
-    if (selWi === null) { setSelWi(wi); return }
-    if (selWi === wi) { setSelWi(null); return }
+  function link(a: number, wi: number) {
     setGroups((g) => {
       const next: Record<string, number[]> = {}
       for (const [gid, wis] of Object.entries(g)) next[gid] = [...wis]
-      let gid = [...Object.entries(next)].find(([, wis]) => wis.includes(selWi))?.[0]
-      if (!gid) { gid = firstFreeGid(next); next[gid] = [selWi] }
-      // if the clicked word is already in this group, remove it (unlink); else add
+      let gid = [...Object.entries(next)].find(([, wis]) => wis.includes(a))?.[0]
+      if (!gid) { gid = firstFreeGid(next); next[gid] = [a] }
       if (next[gid]!.includes(wi)) next[gid] = next[gid]!.filter((x) => x !== wi)
       else { for (const id of Object.keys(next)) if (id !== gid) next[id] = next[id]!.filter((x) => x !== wi); next[gid] = [...next[gid]!, wi] }
       for (const id of Object.keys(next)) if (!next[id]!.length) delete next[id]
       return next
     })
-    setSelWi(wi); setDirty(true)
+    setDirty(true)
+  }
+  function pick(wi: number) {                     // Space / click in rhymes mode
+    if (anchor === null) { setAnchor(wi); return }
+    if (anchor === wi) { setAnchor(null); return }
+    link(anchor, wi); setAnchor(wi)
   }
   function setType(wi: number, t: string) {
-    setTypes((m) => { const n = { ...m }; if (n[wi] === t) delete n[wi]; else n[wi] = t; return n })
-    setDirty(true)
+    setTypes((m) => { const n = { ...m }; if (n[wi] === t) delete n[wi]; else n[wi] = t; return n }); setDirty(true)
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
+    const k = e.key
+    if (k === 'ArrowLeft') { e.preventDefault(); move('left'); return }
+    if (k === 'ArrowRight') { e.preventDefault(); move('right'); return }
+    if (k === 'ArrowUp') { e.preventDefault(); move('up'); return }
+    if (k === 'ArrowDown') { e.preventDefault(); move('down'); return }
     if (mode === 'bars') {
-      if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); toggleVerse() }
-      else if (e.key === 'Enter') { e.preventDefault(); splitAtCaret() }
-      else if (e.key === 'Backspace' && caret.w === 0) { e.preventDefault(); joinWithPrev() }
-    } else if (mode === 'rhymes' && selWi != null && (e.ctrlKey || e.metaKey)) {
-      const t = TYPE_KEYS[e.key.toLowerCase()]
-      if (t) { e.preventDefault(); setType(selWi, t) }
+      if (k === 'Enter' && e.shiftKey) { e.preventDefault(); toggleVerse() }
+      else if (k === 'Enter') { e.preventDefault(); splitAtCur() }
+      else if (k === 'Backspace' && cur.w === 0) { e.preventDefault(); joinWithPrev() }
+    } else {
+      if (k === ' ' || k === 'Enter') { e.preventDefault(); if (curWi != null) pick(curWi) }
+      else if ((e.ctrlKey || e.metaKey) && TYPE_KEYS[k.toLowerCase()]) {
+        e.preventDefault(); if (curWi != null) setType(curWi, TYPE_KEYS[k.toLowerCase()]!)
+      }
     }
   }
 
-  function onWordClick(bi: number, wIdx: number, wi: number) {
-    if (mode === 'bars') { setCaret({ b: bi, w: wIdx }); containerRef.current?.focus() }
-    else { onRhymeClick(wi); containerRef.current?.focus() }
+  function onWordClick(b: number, w: number, wi: number) {
+    setCur({ b, w }); containerRef.current?.focus()
+    if (mode === 'rhymes') pick(wi)
   }
 
   async function save() {
     setSaving(true)
     try {
-      await api.putAnnotation(videoId, {
-        bars, groups, paras,
-        types: Object.fromEntries(Object.entries(types).map(([k, v]) => [String(k), v])),
-      })
+      await api.putAnnotation(videoId, { bars, groups, paras, types: Object.fromEntries(Object.entries(types).map(([k, v]) => [String(k), v])) })
       setDirty(false); setStatus('saved ✓')
     } catch { setStatus('save failed') } finally { setSaving(false) }
   }
-  function reset() { setBars(autoSegment()); setParas([]); setCaret({ b: 0, w: 0 }); setDirty(true); setStatus('re-split — save to keep') }
+  function reset() { setBars(autoSegment()); setParas([]); setCur({ b: 0, w: 0 }); setDirty(true); setStatus('re-split — save to keep') }
   const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 
-  function wordStyle(wi: number, isCaret: boolean): React.CSSProperties {
-    const gid = gidOfWord.get(wi); const t = effType(wi)
-    const hue = gid != null ? hueOfGid(gid) : null
+  function wordStyle(wi: number, isCur: boolean): React.CSSProperties {
+    const gid = gidOfWord.get(wi); const t = effType(wi); const hue = gid != null ? hueOfGid(gid) : null
     return {
       cursor: 'pointer', padding: '0 3px', borderRadius: 3,
-      background: hue != null ? `hsl(${hue} 75% 50% / 0.45)` : undefined,
+      background: hue != null ? `hsl(${hue} 75% 50% / 0.45)` : (isCur ? 'var(--color-hover, rgba(255,255,255,0.08))' : undefined),
       fontWeight: t === 'end' ? 700 : 400,
       fontStyle: t === 'slant' ? 'italic' : undefined,
-      textDecoration: t === 'internal' ? 'underline' : t === 'multi' ? 'underline' : undefined,
+      textDecoration: t === 'internal' || t === 'multi' ? 'underline' : undefined,
       textDecorationStyle: t === 'multi' ? 'double' : t === 'internal' ? 'dotted' : undefined,
       textUnderlineOffset: '2px',
-      outline: (isCaret || selWi === wi) ? '1px solid var(--color-primary)' : undefined,
+      outline: isCur ? '2px solid var(--color-primary)' : (anchor === wi ? '1px dashed var(--color-primary)' : undefined),
     }
   }
 
-  const TYPE_HELP = 'B end · U internal · I slant · M multi'
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', border: '1px solid var(--color-border)', borderRadius: 6, overflow: 'hidden' }}>
           {(['bars', 'rhymes'] as const).map((m) => (
-            <button key={m} onClick={() => setMode(m)} style={{
+            <button key={m} onClick={() => { setMode(m); containerRef.current?.focus() }} style={{
               fontFamily: MONO, fontSize: '0.72rem', padding: '4px 12px', cursor: 'pointer', border: 'none',
               background: mode === m ? 'var(--color-primary)' : 'transparent', color: mode === m ? '#0a0a0a' : 'var(--color-muted)',
             }}>{m === 'bars' ? '¶ Bars' : '♪ Rhymes'}</button>
           ))}
         </div>
         <span style={{ fontSize: '0.74rem', color: 'var(--color-muted)' }}>
-          {mode === 'bars'
-            ? <>click · <kbd>Enter</kbd> split bar · <kbd>Shift+Enter</kbd> verse · <kbd>Backspace</kbd> join</>
-            : <>click two words to rhyme them · <kbd>Ctrl</kbd>+ {TYPE_HELP}</>}
+          <kbd>←→↑↓</kbd> move · {mode === 'bars'
+            ? <><kbd>Enter</kbd> split · <kbd>Shift+Enter</kbd> verse · <kbd>Backspace</kbd> join</>
+            : <><kbd>Space</kbd> rhyme with anchor · <kbd>Ctrl</kbd>+B/U/I/M type</>}
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: '0.72rem', color: 'var(--color-muted)' }}>{status}</span>
@@ -207,18 +228,15 @@ export default function BarEditor({ analysis, videoId }: Props) {
               <span style={{ width: '2.6rem', flexShrink: 0, textAlign: 'right', fontFamily: MONO, fontSize: '0.7rem', color: 'var(--color-muted)' }}>
                 {bar.length ? fmt(meta.get(bar[0]!)?.start ?? 0) : ''}
               </span>
-              <p style={{ margin: 0, lineHeight: 1.85 }}>
-                {bar.map((wi, wIdx) => {
-                  const isCaret = mode === 'bars' && caret.b === bi && caret.w === wIdx
-                  return (
-                    <span key={wi}>
-                      {wIdx > 0 && ' '}
-                      <span onClick={() => onWordClick(bi, wIdx, wi)} style={wordStyle(wi, isCaret)}>
-                        {meta.get(wi)?.text ?? '?'}
-                      </span>
+              <p style={{ margin: 0, lineHeight: 1.9 }}>
+                {bar.map((wi, wIdx) => (
+                  <span key={wi}>
+                    {wIdx > 0 && ' '}
+                    <span onClick={() => onWordClick(bi, wIdx, wi)} style={wordStyle(wi, cur.b === bi && cur.w === wIdx)}>
+                      {meta.get(wi)?.text ?? '?'}
                     </span>
-                  )
-                })}
+                  </span>
+                ))}
               </p>
             </div>
           </div>
