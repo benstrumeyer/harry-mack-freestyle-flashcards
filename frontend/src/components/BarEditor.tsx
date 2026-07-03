@@ -61,8 +61,10 @@ export default function BarEditor({ analysis, videoId }: Props) {
     return () => { cancelled = true }
   }, [videoId, autoSegment])
 
-  const gids = useMemo(() => Object.keys(groups), [groups])
-  const hueOfGid = (gid: string) => USER_PALETTE[Math.max(0, gids.indexOf(gid)) % USER_PALETTE.length]!
+  // Groups are numbered slots g1..g10 → fixed palette color by number (stable).
+  const numOfGid = (gid: string) => Math.max(1, parseInt(gid.replace(/\D/g, '') || '1', 10))
+  const hueOfNum = (n: number) => USER_PALETTE[(n - 1) % USER_PALETTE.length]!
+  const hueOfGid = (gid: string) => hueOfNum(numOfGid(gid))
   const gidOfWord = useMemo(() => {
     const m = new Map<number, string>()
     for (const [gid, wis] of Object.entries(groups)) for (const wi of wis) m.set(wi, gid)
@@ -145,6 +147,20 @@ export default function BarEditor({ analysis, videoId }: Props) {
   function setType(wi: number, t: string) {
     setTypes((m) => { const n = { ...m }; if (n[wi] === t) delete n[wi]; else n[wi] = t; return n }); setDirty(true)
   }
+  // Number keys 1-10: put the cursor word in rhyme group N (toggle).
+  function assignGroup(wi: number, n: number) {
+    const gid = `g${n}`
+    setGroups((g) => {
+      const next: Record<string, number[]> = {}
+      for (const [id, wis] of Object.entries(g)) next[id] = [...wis]
+      const had = next[gid]?.includes(wi)
+      for (const id of Object.keys(next)) next[id] = next[id]!.filter((x) => x !== wi)
+      if (!had) next[gid] = [...(next[gid] ?? []), wi]
+      for (const id of Object.keys(next)) if (!next[id]!.length) delete next[id]
+      return next
+    })
+    setDirty(true)
+  }
 
   function onKeyDown(e: React.KeyboardEvent) {
     const k = e.key
@@ -152,6 +168,10 @@ export default function BarEditor({ analysis, videoId }: Props) {
     if (k === 'ArrowRight') { e.preventDefault(); move('right'); return }
     if (k === 'ArrowUp') { e.preventDefault(); move('up'); return }
     if (k === 'ArrowDown') { e.preventDefault(); move('down'); return }
+    // Number keys 1-9,0 → rhyme group 1-10 on the cursor word (works in both modes).
+    if (/^[0-9]$/.test(k) && curWi != null && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault(); assignGroup(curWi, k === '0' ? 10 : parseInt(k, 10)); return
+    }
     if (mode === 'bars') {
       if (k === 'Enter' && e.shiftKey) { e.preventDefault(); toggleVerse() }
       else if (k === 'Enter') { e.preventDefault(); splitAtCur() }
@@ -205,14 +225,42 @@ export default function BarEditor({ analysis, videoId }: Props) {
           ))}
         </div>
         <span style={{ fontSize: '0.74rem', color: 'var(--color-muted)' }}>
-          <kbd>←→↑↓</kbd> move · {mode === 'bars'
+          <kbd>←→↑↓</kbd> move · <kbd>1</kbd>–<kbd>0</kbd> rhyme group · {mode === 'bars'
             ? <><kbd>Enter</kbd> split · <kbd>Shift+Enter</kbd> verse · <kbd>Backspace</kbd> join</>
-            : <><kbd>Space</kbd> rhyme with anchor · <kbd>Ctrl</kbd>+B/U/I/M type</>}
+            : <><kbd>Space</kbd> link · <kbd>Ctrl</kbd>+B/U/I/M type</>}
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: '0.72rem', color: 'var(--color-muted)' }}>{status}</span>
         {mode === 'bars' && <button onClick={reset} style={btn(false)}>Re-split</button>}
         <button onClick={save} disabled={saving || !dirty} style={btn(dirty && !saving)}>{saving ? 'Saving…' : 'Save'}</button>
+      </div>
+
+      {/* Color/style legend: numbered rhyme groups + Word-style type marks. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 8, flexWrap: 'wrap', fontSize: '0.72rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ color: 'var(--color-muted)', fontFamily: MONO }}>Groups:</span>
+          {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => {
+            const gid = `g${n}`
+            const used = (groups[gid]?.length ?? 0) > 0
+            const curG = curWi != null ? gidOfWord.get(curWi) : undefined
+            const key = n === 10 ? '0' : String(n)
+            return (
+              <span key={n} title={`rhyme group ${n} — press ${key}`} style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                minWidth: 20, height: 18, borderRadius: 4, fontFamily: MONO, fontSize: '0.68rem',
+                fontWeight: 700, color: '#0a0a0a', background: `hsl(${hueOfNum(n)} 75% 50% / ${used ? 0.9 : 0.25})`,
+                outline: curG === gid ? '2px solid var(--color-primary)' : 'none',
+              }}>{key}</span>
+            )
+          })}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: 'var(--color-muted)' }}>
+          <span style={{ fontFamily: MONO }}>Types:</span>
+          <span title="Ctrl+B" style={{ fontWeight: 700, color: 'var(--color-text)' }}>bold = end</span>
+          <span title="Ctrl+I" style={{ fontStyle: 'italic', color: 'var(--color-text)' }}>italic = slant</span>
+          <span title="Ctrl+U" style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', color: 'var(--color-text)' }}>internal</span>
+          <span title="Ctrl+M" style={{ textDecoration: 'underline', textDecorationStyle: 'double', color: 'var(--color-text)' }}>multi</span>
+        </div>
       </div>
 
       <div ref={containerRef} tabIndex={0} onKeyDown={onKeyDown} style={{
