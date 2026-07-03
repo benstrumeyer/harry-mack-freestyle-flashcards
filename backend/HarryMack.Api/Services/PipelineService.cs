@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using HarryMack.Api.Data;
 using HarryMack.Api.Models;
@@ -35,7 +36,7 @@ public class PipelineService
         if (bars.Count == 0)
             return new PipelineResultDto("No bars extracted.", 0, 0, 0);
 
-        var (openers, rhymes) = await UpsertResultsAsync(result.Video, artist, bars);
+        var (openers, rhymes) = await UpsertResultsAsync(result.Video, artist, bars, result.Analysis);
         return new PipelineResultDto($"Extracted {bars.Count} bars.", bars.Count, openers, rhymes);
     }
 
@@ -248,7 +249,7 @@ public class PipelineService
     }
 
     private async Task<(int openers, int rhymes)> UpsertResultsAsync(
-        VideoMetaDto video, string artist, List<SidecarBarDto> bars)
+        VideoMetaDto video, string artist, List<SidecarBarDto> bars, AnalysisDto? analysis = null)
     {
         await using var conn = _db.Open();
         await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync();
@@ -273,11 +274,14 @@ public class PipelineService
             int openerCount = 0, rhymeCount = 0;
             // rhyme_word ids grouped by rhyme_key — bars sharing a key form couplet pairs
             var byRhymeKey = new Dictionary<string, List<(string wordId, string word)>>();
+            // bar_index → persisted bar id, so analysis bar_labels map onto real rows
+            var barIdByIndex = new Dictionary<int, string>();
 
             for (int i = 0; i < bars.Count; i++)
             {
                 var bar = bars[i];
                 var barId = Guid.NewGuid().ToString("N");
+                barIdByIndex[i] = barId;
                 {
                     await using var cmd = conn.CreateCommand();
                     cmd.Transaction = tx;
@@ -396,6 +400,9 @@ public class PipelineService
                 }
             }
 
+            if (analysis is not null)
+                await PersistAnalysisAsync(conn, tx, videoId, analysis, barIdByIndex);
+
             await tx.CommitAsync();
             return (openerCount, rhymeCount);
         }
@@ -403,6 +410,117 @@ public class PipelineService
         {
             await tx.RollbackAsync();
             throw;
+        }
+    }
+
+    // Persists the analyze-stage payload (full transcript + rhyme events/groups/annotations/
+    // bar labels) into the additive tables, inside the caller's ingestion transaction.
+    private static async Task PersistAnalysisAsync(
+        SqliteConnection conn, SqliteTransaction tx, string videoId,
+        AnalysisDto analysis, Dictionary<int, string> barIdByIndex)
+    {
+        // Per-word phoneme detail lives on the rhyme events; index it by word for the
+        // full-transcript rows (filler words simply have no event → null phoneme cols).
+        var eventByWord = new Dictionary<int, RhymeEventDto>();
+        foreach (var ev in analysis.Events)
+            eventByWord[ev.WordIndex] = ev;
+
+        // transcript_words — one row per word (full transcript, incl. non-freestyle words).
+        for (int wi = 0; wi < analysis.Words.Count; wi++)
+        {
+            var w = analysis.Words[wi];
+            eventByWord.TryGetValue(wi, out var ev);
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                INSERT INTO transcript_words
+                  (id, video_id, word_index, text, start_seconds, end_seconds, score, ipa, vowel_seq, delivered_ipa)
+                VALUES ($id, $vid, $wi, $t, $s, $e, $sc, $ipa, $vs, $dip)";
+            cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+            cmd.Parameters.AddWithValue("$vid", videoId);
+            cmd.Parameters.AddWithValue("$wi", wi);
+            cmd.Parameters.AddWithValue("$t", w.Text);
+            cmd.Parameters.AddWithValue("$s", w.Start);
+            cmd.Parameters.AddWithValue("$e", w.End);
+            cmd.Parameters.AddWithValue("$sc", w.Score);
+            cmd.Parameters.AddWithValue("$ipa", (object?)ev?.CanonicalKey ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$vs",
+                ev is null ? DBNull.Value : JsonSerializer.Serialize(ev.VowelSeq));
+            cmd.Parameters.AddWithValue("$dip", (object?)ev?.DeliveredKey ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // rhyme_groups
+        foreach (var g in analysis.Groups)
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                INSERT INTO rhyme_groups (id, video_id, group_index, hue, size, key)
+                VALUES ($id, $vid, $gi, $hue, $size, $key)";
+            cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+            cmd.Parameters.AddWithValue("$vid", videoId);
+            cmd.Parameters.AddWithValue("$gi", g.GroupIndex);
+            cmd.Parameters.AddWithValue("$hue", g.Hue);
+            cmd.Parameters.AddWithValue("$size", g.WordIndices.Count);
+            cmd.Parameters.AddWithValue("$key", (object?)g.Key ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // rhyme_events
+        foreach (var ev in analysis.Events)
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                INSERT INTO rhyme_events
+                  (id, video_id, word_index, bar_index, intra_bar_index,
+                   canonical_key, delivered_key, detector, group_index, stress)
+                VALUES ($id, $vid, $wi, $bi, $ii, $ck, $dk, $det, $gi, $st)";
+            cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+            cmd.Parameters.AddWithValue("$vid", videoId);
+            cmd.Parameters.AddWithValue("$wi", ev.WordIndex);
+            cmd.Parameters.AddWithValue("$bi", ev.BarIndex);
+            cmd.Parameters.AddWithValue("$ii", ev.IntraBarIndex);
+            cmd.Parameters.AddWithValue("$ck", (object?)ev.CanonicalKey ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$dk", (object?)ev.DeliveredKey ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$det", (object?)ev.Detector ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$gi", (object?)ev.GroupIndex ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$st", ev.Stress);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // rhyme_annotations — exactly one row per video (video_id is PK).
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                INSERT INTO rhyme_annotations (video_id, detector_version, scheme_json, density)
+                VALUES ($vid, $dv, $sj, $den)
+                ON CONFLICT(video_id) DO UPDATE
+                  SET detector_version = $dv, scheme_json = $sj, density = $den";
+            cmd.Parameters.AddWithValue("$vid", videoId);
+            cmd.Parameters.AddWithValue("$dv", analysis.DetectorVersion);
+            cmd.Parameters.AddWithValue("$sj", JsonSerializer.Serialize(analysis.Scheme));
+            cmd.Parameters.AddWithValue("$den", analysis.Density);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // bar_labels — map the analysis bar_index onto the persisted bar id.
+        foreach (var (barIndex, detector) in analysis.BarLabels)
+        {
+            if (!barIdByIndex.TryGetValue(barIndex, out var barId)) continue;
+            analysis.Scheme.TryGetValue(barIndex, out var scheme);
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                INSERT INTO bar_labels (bar_id, detector, scheme)
+                VALUES ($bid, $det, $sch)
+                ON CONFLICT(bar_id) DO UPDATE SET detector = $det, scheme = $sch";
+            cmd.Parameters.AddWithValue("$bid", barId);
+            cmd.Parameters.AddWithValue("$det", (object?)detector ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$sch", (object?)scheme ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync();
         }
     }
 }
