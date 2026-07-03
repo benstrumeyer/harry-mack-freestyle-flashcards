@@ -147,6 +147,50 @@ class RhymeModel:
                 "loss": round(last_loss, 4), "accuracy": round(acc, 4),
                 "auc": round(_auc(labels, probs), 4)}
 
+    def finetune(self, pairs, epochs: int = 60, lr: float = 0.005) -> dict:
+        """Warm-start continued training on user pairs — the train-as-you-go hook.
+
+        Unlike `train()`, this keeps the already-loaded vocabulary and weights and
+        just runs more optimisation steps, so a pretrained base (`rhyme_base.pt`)
+        adapts to the user's own rhyme labels instead of learning from scratch.
+        Tokens unseen during pretraining fall back to `<unk>` (no embedding resize).
+        Requires a loaded/trained net; reports honestly on a single-class batch."""
+        if self.net is None:
+            raise RuntimeError("finetune requires a base model — call load() or train() first")
+        torch.manual_seed(self.seed)
+        random.seed(self.seed)
+        n = len(pairs)
+        labels = [int(l) for _, _, l in pairs]
+        pos = sum(labels)
+        if n == 0 or pos == 0 or pos == n:
+            return {"trained": False, "n": n, "positives": pos,
+                    "message": "need both rhyme and non-rhyme user pairs to fine-tune"}
+
+        a_ids, a_len = self._batch([self._ids(a) for a, _, _ in pairs])
+        b_ids, b_len = self._batch([self._ids(b) for _, b, _ in pairs])
+        y = torch.tensor(labels, dtype=torch.float32)
+
+        opt = torch.optim.Adam(self.net.parameters(), lr=lr)
+        loss_fn = nn.BCEWithLogitsLoss()
+        self.net.train()
+        last_loss = float("nan")
+        for _ in range(epochs):
+            opt.zero_grad()
+            logits = self.net(a_ids, a_len, b_ids, b_len)
+            loss = loss_fn(logits, y)
+            loss.backward()
+            opt.step()
+            last_loss = loss.item()
+
+        self.net.eval()
+        with torch.no_grad():
+            probs = torch.sigmoid(self.net(a_ids, a_len, b_ids, b_len)).tolist()
+        preds = [1 if p >= 0.5 else 0 for p in probs]
+        acc = sum(int(p == t) for p, t in zip(preds, labels)) / n
+        return {"trained": True, "n": n, "positives": pos, "epochs": epochs,
+                "loss": round(last_loss, 4), "accuracy": round(acc, 4),
+                "auc": round(_auc(labels, probs), 4)}
+
     # -- inference ----------------------------------------------------------
     def predict_rhyme(self, a, b) -> float:
         """P(rhyme) in [0, 1] for two phoneme sequences (or words)."""
