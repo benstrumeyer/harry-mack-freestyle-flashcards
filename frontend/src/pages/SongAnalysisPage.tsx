@@ -57,6 +57,19 @@ export default function SongAnalysisPage() {
         </div>
       ) : (
         <div style={{ flex: 1, overflowY: 'auto', padding: '1rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {analysis.video.youtubeId && (
+            <div style={{ width: '100%', maxWidth: 640, alignSelf: 'center' }}>
+              <div style={{ position: 'relative', width: '100%', paddingTop: '56.25%', borderRadius: 10, overflow: 'hidden', border: '1px solid var(--color-border)' }}>
+                <iframe
+                  title={analysis.video.title ?? 'video'}
+                  src={`https://www.youtube-nocookie.com/embed/${analysis.video.youtubeId}`}
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 0 }}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              </div>
+            </div>
+          )}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
             <DensityPanel density={analysis.density} />
             <DetectorLegend />
