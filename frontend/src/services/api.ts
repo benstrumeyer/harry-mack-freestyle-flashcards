@@ -104,7 +104,128 @@ export interface BarSourceDto {
   barText: string
 }
 
+// --- Rap analysis (annotated transcript) ---
+// Mirror the backend response DTOs (Models/AnalysisDtos.cs), served camelCase.
+
+export interface VideoSummaryDto {
+  id: string
+  title: string | null
+  artist: string | null
+  barCount: number
+  wordCount: number
+  density: number | null
+  youtubeId: string | null
+}
+
+export interface TranscriptWordDto {
+  wordIndex: number
+  text: string
+  start: number
+  end: number
+  score: number | null
+  ipa: string | null
+  vowelSeq: string[] | null
+  deliveredIpa: string | null
+}
+
+// Persisted rhyme event (backend AnalysisEventDto) — carries the group link + detector label.
+export interface RhymeEventDto {
+  wordIndex: number
+  barIndex: number
+  intraBarIndex: number
+  canonicalKey: string | null
+  deliveredKey: string | null
+  detector: string | null
+  groupIndex: number | null
+  stress: number
+}
+
+// Persisted rhyme group (backend AnalysisGroupDto) — hue drives transcript coloring.
+export interface RhymeGroupDto {
+  groupIndex: number
+  hue: number
+  size: number
+  key: string | null
+}
+
+export interface VideoAnalysisDto {
+  video: VideoSummaryDto
+  words: TranscriptWordDto[]
+  events: RhymeEventDto[]
+  groups: RhymeGroupDto[]
+  scheme: Record<number, string>
+  density: number
+}
+
+// Per-song rhyme dictionary (backend SongDictionaryDto).
+export interface SongDictionaryGroupDto {
+  groupIndex: number
+  hue: number
+  key: string | null
+  words: string[]
+}
+
+export interface SongDictionaryDto {
+  videoId: string
+  groups: SongDictionaryGroupDto[]
+}
+
+// --- Rhyme Game opener mode (mirror backend Models/OpenerModeDtos.cs, camelCase) ---
+
+export interface OpenerChallengeDto {
+  openerId: string
+  openerText: string
+  targetWord: string | null
+  targetKey: string | null
+  targetDeliveredKey: string | null
+  validWords: string[]
+}
+
+// matchedOn ∈ "canonical" | "delivered" | "dictionary" | null
+export interface OpenerValidationDto {
+  valid: boolean
+  word: string
+  key: string | null
+  targetKey: string | null
+  matchedOn: string | null
+}
+
+// Human-in-the-loop annotation: user bar boundaries (word indices per bar) +
+// rhyme groups (groupId -> word indices). Source of truth + training labels.
+export interface UserAnnotationDto {
+  bars: number[][]
+  groups: Record<string, number[]>
+  paras?: number[]                     // bar indices that start a verse
+  types?: Record<string, string>       // wordIndex -> end|internal|slant|multi
+}
+
 export const api = {
+  // Annotation: GET returns null when the user hasn't annotated this video yet (204).
+  getAnnotation: async (id: string): Promise<UserAnnotationDto | null> => {
+    const res = await fetch(`${BASE}/videos/${encodeURIComponent(id)}/annotation`)
+    if (res.status === 204) return null
+    if (!res.ok) throw new Error(`GET annotation: ${res.status}`)
+    return res.json() as Promise<UserAnnotationDto>
+  },
+  putAnnotation: async (id: string, ann: UserAnnotationDto): Promise<void> => {
+    const res = await fetch(`${BASE}/videos/${encodeURIComponent(id)}/annotation`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ann),
+    })
+    if (!res.ok) throw new Error(`PUT annotation: ${res.status}`)
+  },
+  // Auto-annotate first pass (never persisted). engine: local | ensemble | ai.
+  // 'ai' returns the stored Claude-Code draft (null/204 when none exists);
+  // local/ensemble return a sidecar-computed draft. The editor treats the
+  // result as an editable SUGGESTION — it never overwrites a saved annotation.
+  getAutoAnnotate: async (id: string, engine: 'local' | 'ensemble' | 'ai'): Promise<UserAnnotationDto | null> => {
+    const res = await fetch(`${BASE}/videos/${encodeURIComponent(id)}/auto-annotate?engine=${engine}`)
+    if (res.status === 204) return null
+    if (!res.ok) throw new Error(`GET auto-annotate: ${res.status}`)
+    return res.json() as Promise<UserAnnotationDto>
+  },
+
   processUrl: (url: string, artist = 'harry_mack') =>
     post<PipelineResultDto>('/pipeline/process-url', { url, artist }),
   processPlaylist: (url: string) =>
@@ -148,4 +269,17 @@ export const api = {
 
   getWordList: (artist = 'harry_mack') =>
     get<{ words: [string, number, string, number][]; openers: string[] }>(`/game/wordlist/${artist}`),
+
+  getVideos: () =>
+    get<VideoSummaryDto[]>('/videos'),
+  getVideoAnalysis: (id: string) =>
+    get<VideoAnalysisDto>(`/videos/${encodeURIComponent(id)}/analysis`),
+  getSongDictionary: (id: string) =>
+    get<SongDictionaryDto>(`/videos/${encodeURIComponent(id)}/rhyme-dictionary`),
+
+  // --- Rhyme Game opener mode (spec §7b / Spec 2, Task 5.1 backend) ---
+  getOpenerChallenge: (openerId: string) =>
+    get<OpenerChallengeDto>(`/game/opener/${encodeURIComponent(openerId)}`),
+  validateOpenerGuess: (openerId: string, word: string) =>
+    post<OpenerValidationDto>(`/game/opener/${encodeURIComponent(openerId)}/validate`, { word }),
 }

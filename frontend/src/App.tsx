@@ -4,6 +4,8 @@ import OpenerDictionaryPage from './pages/OpenerDictionaryPage'
 import RhymeDictionaryPage from './pages/RhymeDictionaryPage'
 import PipelinePage from './pages/PipelinePage'
 import RhymeGamePage from './pages/RhymeGamePage'
+import SongsListPage from './pages/SongsListPage'
+import SongAnalysisPage from './pages/SongAnalysisPage'
 
 function App() {
   return (
@@ -23,6 +25,7 @@ function App() {
           { to: '/', label: 'Flashcards', end: true },
           { to: '/openers', label: 'Openers', end: false },
           { to: '/rhymes', label: 'Rhymes', end: false },
+          { to: '/songs', label: 'Songs', end: false },
           { to: '/pipeline', label: 'Pipeline', end: false },
           { to: '/game', label: 'Rhyme Game', end: false },
         ].map(({ to, label, end }) => (
@@ -45,6 +48,8 @@ function App() {
         <Route path="/" element={<FlashcardPage />} />
         <Route path="/openers" element={<OpenerDictionaryPage />} />
         <Route path="/rhymes" element={<RhymeDictionaryPage />} />
+        <Route path="/songs" element={<SongsListPage />} />
+        <Route path="/songs/:videoId" element={<SongAnalysisPage />} />
         <Route path="/pipeline" element={<PipelinePage />} />
         <Route path="/game" element={<RhymeGamePage />} />
       </Routes>

@@ -1,10 +1,11 @@
 import { Component } from 'react'
 import { api } from '../services/api'
+import OpenerMode from '../components/OpenerMode'
 
 // [word, syllables, rhymeKey, inCorpus]
 type WordTuple = [string, number, string, number]
 type Bar = { word: string; color: string; opener: string | null }
-type Screen = 'setup' | 'play' | 'done' | 'dict'
+type Screen = 'setup' | 'play' | 'done' | 'dict' | 'opener'
 
 interface State {
   screen: Screen
@@ -292,12 +293,13 @@ export default class RhymeGamePage extends Component<Record<string, never>, Stat
               <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, padding: '4px 8px', borderRadius: 999, background: 'rgba(240,138,46,0.18)', color: '#FFC787', border: '1px solid rgba(240,138,46,0.45)' }}>ARTIST EDITION</span>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              {(['setup', 'dict'] as const).map((s) => {
+              {(['setup', 'opener', 'dict'] as const).map((s) => {
                 const on = st.screen === s
+                const tabLabel = s === 'setup' ? 'Setup' : s === 'opener' ? 'Opener Mode' : 'Rhyme Dictionary'
                 return (
                   <button key={s} onClick={() => { this.stopClock(); this.setState({ screen: s, running: false }) }}
                     style={{ padding: '8px 14px', borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', border: on ? '1px solid #F08A2E' : '1px solid rgba(255,255,255,0.15)', background: on ? 'rgba(240,138,46,0.15)' : 'transparent', color: on ? '#FFC787' : 'rgba(244,238,225,0.6)' }}>
-                    {s === 'setup' ? 'Setup' : 'Rhyme Dictionary'}
+                    {tabLabel}
                   </button>
                 )
               })}
@@ -363,6 +365,9 @@ export default class RhymeGamePage extends Component<Record<string, never>, Stat
             <div style={{ textAlign: 'center', fontSize: 12, color: 'rgba(244,238,225,0.45)' }}>Rap out loud. Land the colored word on beat 4 of each bar.</div>
           </div>
         )}
+
+        {/* OPENER MODE — present an opener, player inputs rhymes, validate + score (spec §7b) */}
+        {st.screen === 'opener' && <OpenerMode />}
 
         {/* PLAY */}
         {st.screen === 'play' && (

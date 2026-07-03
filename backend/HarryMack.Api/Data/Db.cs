@@ -49,7 +49,56 @@ public sealed class Db(string connectionString)
             cards_shown TEXT DEFAULT '[]');
         CREATE TABLE IF NOT EXISTS saved_openers (
             id TEXT PRIMARY KEY, opener_id TEXT REFERENCES openers(id) ON DELETE SET NULL,
-            text TEXT NOT NULL, saved_at TEXT DEFAULT (datetime('now')));";
+            text TEXT NOT NULL, saved_at TEXT DEFAULT (datetime('now')));
+        CREATE TABLE IF NOT EXISTS transcript_words (
+            id TEXT PRIMARY KEY, video_id TEXT REFERENCES videos(id) ON DELETE CASCADE,
+            word_index INTEGER, text TEXT, start_seconds REAL, end_seconds REAL,
+            score REAL, ipa TEXT, vowel_seq TEXT, delivered_ipa TEXT);
+        CREATE TABLE IF NOT EXISTS rhyme_groups (
+            id TEXT PRIMARY KEY, video_id TEXT REFERENCES videos(id) ON DELETE CASCADE,
+            group_index INTEGER, hue INTEGER, size INTEGER, key TEXT);
+        CREATE TABLE IF NOT EXISTS rhyme_events (
+            id TEXT PRIMARY KEY, video_id TEXT REFERENCES videos(id) ON DELETE CASCADE,
+            word_index INTEGER, bar_index INTEGER, intra_bar_index INTEGER,
+            canonical_key TEXT, delivered_key TEXT, detector TEXT,
+            group_index INTEGER, stress INTEGER);
+        CREATE TABLE IF NOT EXISTS rhyme_annotations (
+            video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+            detector_version INTEGER, scheme_json TEXT, density REAL,
+            created_at TEXT DEFAULT (datetime('now')));
+        CREATE TABLE IF NOT EXISTS bar_labels (
+            bar_id TEXT REFERENCES bars(id) ON DELETE CASCADE,
+            detector TEXT, scheme TEXT, PRIMARY KEY (bar_id));
+        CREATE TABLE IF NOT EXISTS rhyme_dictionary (
+            id TEXT PRIMARY KEY, key TEXT, vowel_run INTEGER,
+            artist TEXT, word TEXT, frequency INTEGER DEFAULT 1, song_count INTEGER DEFAULT 1,
+            is_multisyllabic INTEGER DEFAULT 0, is_internal INTEGER DEFAULT 0,
+            UNIQUE (artist, word, key));
+        CREATE TABLE IF NOT EXISTS rhyme_dictionary_pairs (
+            word_a TEXT, word_b TEXT, key TEXT, artist TEXT, frequency INTEGER DEFAULT 1,
+            PRIMARY KEY (word_a, word_b, artist));
+        -- Human-in-the-loop annotation: the user's own bar boundaries + rhyme
+        -- groups (source of truth + future training labels). bars_json = int[][]
+        -- word indices per bar; groups_json = { groupId: int[] } word indices.
+        CREATE TABLE IF NOT EXISTS user_annotations (
+            video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+            bars_json TEXT, groups_json TEXT, paras_json TEXT, types_json TEXT,
+            ai_draft_json TEXT,
+            updated_at TEXT DEFAULT (datetime('now')));";
         await cmd.ExecuteNonQueryAsync();
+
+        // Add richer-annotation columns to any pre-existing user_annotations table.
+        // ai_draft_json holds a Claude-Code-authored suggestion (same shape as the
+        // saved annotation) that NEVER overwrites the user's saved columns.
+        foreach (var col in new[] { "paras_json", "types_json", "ai_draft_json" })
+        {
+            try
+            {
+                await using var alter = conn.CreateCommand();
+                alter.CommandText = $"ALTER TABLE user_annotations ADD COLUMN {col} TEXT";
+                await alter.ExecuteNonQueryAsync();
+            }
+            catch { /* column already exists */ }
+        }
     }
 }
