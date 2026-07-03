@@ -82,8 +82,20 @@ public sealed class Db(string connectionString)
         -- word indices per bar; groups_json = { groupId: int[] } word indices.
         CREATE TABLE IF NOT EXISTS user_annotations (
             video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
-            bars_json TEXT, groups_json TEXT,
+            bars_json TEXT, groups_json TEXT, paras_json TEXT, types_json TEXT,
             updated_at TEXT DEFAULT (datetime('now')));";
         await cmd.ExecuteNonQueryAsync();
+
+        // Add richer-annotation columns to any pre-existing user_annotations table.
+        foreach (var col in new[] { "paras_json", "types_json" })
+        {
+            try
+            {
+                await using var alter = conn.CreateCommand();
+                alter.CommandText = $"ALTER TABLE user_annotations ADD COLUMN {col} TEXT";
+                await alter.ExecuteNonQueryAsync();
+            }
+            catch { /* column already exists */ }
+        }
     }
 }

@@ -195,6 +195,8 @@ export interface OpenerValidationDto {
 export interface UserAnnotationDto {
   bars: number[][]
   groups: Record<string, number[]>
+  paras?: number[]                     // bar indices that start a verse
+  types?: Record<string, string>       // wordIndex -> end|internal|slant|multi
 }
 
 export const api = {

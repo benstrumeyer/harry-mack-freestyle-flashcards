@@ -176,7 +176,7 @@ public class VideosController : ControllerBase
     {
         await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT bars_json, groups_json FROM user_annotations WHERE video_id = $id";
+        cmd.CommandText = "SELECT bars_json, groups_json, paras_json, types_json FROM user_annotations WHERE video_id = $id";
         cmd.Parameters.AddWithValue("$id", id);
         await using var r = await cmd.ExecuteReaderAsync();
         if (!await r.ReadAsync()) return NoContent();
@@ -184,7 +184,11 @@ public class VideosController : ControllerBase
             : JsonSerializer.Deserialize<List<List<int>>>(r.GetString(0)) ?? new();
         var groups = r.IsDBNull(1) ? new Dictionary<string, List<int>>()
             : JsonSerializer.Deserialize<Dictionary<string, List<int>>>(r.GetString(1)) ?? new();
-        return Ok(new UserAnnotationDto(bars, groups));
+        var paras = r.IsDBNull(2) ? new List<int>()
+            : JsonSerializer.Deserialize<List<int>>(r.GetString(2)) ?? new();
+        var types = r.IsDBNull(3) ? new Dictionary<string, string>()
+            : JsonSerializer.Deserialize<Dictionary<string, string>>(r.GetString(3)) ?? new();
+        return Ok(new UserAnnotationDto(bars, groups, paras, types));
     }
 
     // PUT /api/videos/{id}/annotation — upsert the user's annotation.
@@ -194,13 +198,16 @@ public class VideosController : ControllerBase
         await using var conn = _db.Open();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
-            INSERT INTO user_annotations (video_id, bars_json, groups_json, updated_at)
-            VALUES ($id, $bars, $groups, datetime('now'))
+            INSERT INTO user_annotations (video_id, bars_json, groups_json, paras_json, types_json, updated_at)
+            VALUES ($id, $bars, $groups, $paras, $types, datetime('now'))
             ON CONFLICT(video_id) DO UPDATE
-              SET bars_json = $bars, groups_json = $groups, updated_at = datetime('now')";
+              SET bars_json = $bars, groups_json = $groups, paras_json = $paras,
+                  types_json = $types, updated_at = datetime('now')";
         cmd.Parameters.AddWithValue("$id", id);
         cmd.Parameters.AddWithValue("$bars", JsonSerializer.Serialize(body.Bars));
         cmd.Parameters.AddWithValue("$groups", JsonSerializer.Serialize(body.Groups));
+        cmd.Parameters.AddWithValue("$paras", JsonSerializer.Serialize(body.Paras ?? new List<int>()));
+        cmd.Parameters.AddWithValue("$types", JsonSerializer.Serialize(body.Types ?? new Dictionary<string, string>()));
         await cmd.ExecuteNonQueryAsync();
         return NoContent();
     }

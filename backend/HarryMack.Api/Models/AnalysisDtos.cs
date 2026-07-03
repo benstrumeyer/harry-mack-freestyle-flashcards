@@ -45,10 +45,15 @@ public record VideoSummaryDto(
     string Id, string? Title, string? Artist, int BarCount, int WordCount, double? Density,
     string? YoutubeId = null);
 
-// Human-in-the-loop annotation: the user's bar boundaries (word indices per bar)
-// and rhyme groups (groupId -> word indices). The source of truth + training labels.
+// Human-in-the-loop annotation: the user's bar boundaries (word indices per bar),
+// rhyme groups (groupId -> word indices), paragraph/verse breaks (bar indices that
+// start a new verse), and per-word annotation types (wordIndex -> end|internal|
+// slant|multi). The source of truth + training labels.
 public record UserAnnotationDto(
-    List<List<int>> Bars, Dictionary<string, List<int>> Groups);
+    List<List<int>> Bars,
+    Dictionary<string, List<int>> Groups,
+    List<int>? Paras = null,
+    Dictionary<string, string>? Types = null);
 
 // One full-transcript word (`transcript_words`).
 public record TranscriptWordDto(
