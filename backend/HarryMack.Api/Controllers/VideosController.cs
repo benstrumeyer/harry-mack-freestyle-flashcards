@@ -169,4 +169,39 @@ public class VideosController : ControllerBase
 
         return Ok(new VideoAnalysisDto(summary, words, events, groups, scheme, density));
     }
+
+    // GET /api/videos/{id}/annotation — the user's saved bar/rhyme annotation (204 if none).
+    [HttpGet("{id}/annotation")]
+    public async Task<ActionResult<UserAnnotationDto>> GetAnnotation(string id)
+    {
+        await using var conn = _db.Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT bars_json, groups_json FROM user_annotations WHERE video_id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync()) return NoContent();
+        var bars = r.IsDBNull(0) ? new List<List<int>>()
+            : JsonSerializer.Deserialize<List<List<int>>>(r.GetString(0)) ?? new();
+        var groups = r.IsDBNull(1) ? new Dictionary<string, List<int>>()
+            : JsonSerializer.Deserialize<Dictionary<string, List<int>>>(r.GetString(1)) ?? new();
+        return Ok(new UserAnnotationDto(bars, groups));
+    }
+
+    // PUT /api/videos/{id}/annotation — upsert the user's annotation.
+    [HttpPut("{id}/annotation")]
+    public async Task<ActionResult> PutAnnotation(string id, [FromBody] UserAnnotationDto body)
+    {
+        await using var conn = _db.Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO user_annotations (video_id, bars_json, groups_json, updated_at)
+            VALUES ($id, $bars, $groups, datetime('now'))
+            ON CONFLICT(video_id) DO UPDATE
+              SET bars_json = $bars, groups_json = $groups, updated_at = datetime('now')";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$bars", JsonSerializer.Serialize(body.Bars));
+        cmd.Parameters.AddWithValue("$groups", JsonSerializer.Serialize(body.Groups));
+        await cmd.ExecuteNonQueryAsync();
+        return NoContent();
+    }
 }

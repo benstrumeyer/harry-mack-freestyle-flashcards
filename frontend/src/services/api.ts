@@ -190,7 +190,30 @@ export interface OpenerValidationDto {
   matchedOn: string | null
 }
 
+// Human-in-the-loop annotation: user bar boundaries (word indices per bar) +
+// rhyme groups (groupId -> word indices). Source of truth + training labels.
+export interface UserAnnotationDto {
+  bars: number[][]
+  groups: Record<string, number[]>
+}
+
 export const api = {
+  // Annotation: GET returns null when the user hasn't annotated this video yet (204).
+  getAnnotation: async (id: string): Promise<UserAnnotationDto | null> => {
+    const res = await fetch(`${BASE}/videos/${encodeURIComponent(id)}/annotation`)
+    if (res.status === 204) return null
+    if (!res.ok) throw new Error(`GET annotation: ${res.status}`)
+    return res.json() as Promise<UserAnnotationDto>
+  },
+  putAnnotation: async (id: string, ann: UserAnnotationDto): Promise<void> => {
+    const res = await fetch(`${BASE}/videos/${encodeURIComponent(id)}/annotation`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ann),
+    })
+    if (!res.ok) throw new Error(`PUT annotation: ${res.status}`)
+  },
+
   processUrl: (url: string, artist = 'harry_mack') =>
     post<PipelineResultDto>('/pipeline/process-url', { url, artist }),
   processPlaylist: (url: string) =>

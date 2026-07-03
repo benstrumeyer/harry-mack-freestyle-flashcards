@@ -76,7 +76,14 @@ public sealed class Db(string connectionString)
             UNIQUE (artist, word, key));
         CREATE TABLE IF NOT EXISTS rhyme_dictionary_pairs (
             word_a TEXT, word_b TEXT, key TEXT, artist TEXT, frequency INTEGER DEFAULT 1,
-            PRIMARY KEY (word_a, word_b, artist));";
+            PRIMARY KEY (word_a, word_b, artist));
+        -- Human-in-the-loop annotation: the user's own bar boundaries + rhyme
+        -- groups (source of truth + future training labels). bars_json = int[][]
+        -- word indices per bar; groups_json = { groupId: int[] } word indices.
+        CREATE TABLE IF NOT EXISTS user_annotations (
+            video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+            bars_json TEXT, groups_json TEXT,
+            updated_at TEXT DEFAULT (datetime('now')));";
         await cmd.ExecuteNonQueryAsync();
     }
 }

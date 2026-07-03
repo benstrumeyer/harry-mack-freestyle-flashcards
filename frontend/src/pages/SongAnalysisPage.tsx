@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, type VideoAnalysisDto } from '../services/api'
 import AnnotatedTranscript from '../components/AnnotatedTranscript'
+import BarEditor from '../components/BarEditor'
 import DensityPanel from '../components/DensityPanel'
 import DetectorLegend from '../components/DetectorLegend'
 
@@ -12,6 +13,7 @@ export default function SongAnalysisPage() {
   const [analysis, setAnalysis] = useState<VideoAnalysisDto | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
+  const [editing, setEditing] = useState(false)
 
   useEffect(() => {
     if (!videoId) return
@@ -45,6 +47,18 @@ export default function SongAnalysisPage() {
             {analysis.video.artist}
           </span>
         )}
+        <span style={{ flex: 1 }} />
+        <button
+          onClick={() => setEditing((v) => !v)}
+          style={{
+            fontFamily: MONO, fontSize: '0.72rem', padding: '4px 12px', borderRadius: 5, cursor: 'pointer',
+            border: `1px solid ${editing ? 'var(--color-primary)' : 'var(--color-border)'}`,
+            background: editing ? 'var(--color-primary)' : 'transparent',
+            color: editing ? '#0a0a0a' : 'var(--color-muted)',
+          }}
+        >
+          {editing ? '✓ Done editing' : '✎ Edit bars'}
+        </button>
       </div>
 
       {loading ? (
@@ -70,11 +84,17 @@ export default function SongAnalysisPage() {
               </div>
             </div>
           )}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
-            <DensityPanel density={analysis.density} />
-            <DetectorLegend />
-          </div>
-          <AnnotatedTranscript analysis={analysis} />
+          {editing ? (
+            <BarEditor analysis={analysis} videoId={videoId!} />
+          ) : (
+            <>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
+                <DensityPanel density={analysis.density} />
+                <DetectorLegend />
+              </div>
+              <AnnotatedTranscript analysis={analysis} />
+            </>
+          )}
         </div>
       )}
     </div>
