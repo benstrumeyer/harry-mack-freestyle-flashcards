@@ -169,6 +169,26 @@ export interface SongDictionaryDto {
   groups: SongDictionaryGroupDto[]
 }
 
+// --- Rhyme Game opener mode (mirror backend Models/OpenerModeDtos.cs, camelCase) ---
+
+export interface OpenerChallengeDto {
+  openerId: string
+  openerText: string
+  targetWord: string | null
+  targetKey: string | null
+  targetDeliveredKey: string | null
+  validWords: string[]
+}
+
+// matchedOn ∈ "canonical" | "delivered" | "dictionary" | null
+export interface OpenerValidationDto {
+  valid: boolean
+  word: string
+  key: string | null
+  targetKey: string | null
+  matchedOn: string | null
+}
+
 export const api = {
   processUrl: (url: string, artist = 'harry_mack') =>
     post<PipelineResultDto>('/pipeline/process-url', { url, artist }),
@@ -220,4 +240,10 @@ export const api = {
     get<VideoAnalysisDto>(`/videos/${encodeURIComponent(id)}/analysis`),
   getSongDictionary: (id: string) =>
     get<SongDictionaryDto>(`/videos/${encodeURIComponent(id)}/rhyme-dictionary`),
+
+  // --- Rhyme Game opener mode (spec §7b / Spec 2, Task 5.1 backend) ---
+  getOpenerChallenge: (openerId: string) =>
+    get<OpenerChallengeDto>(`/game/opener/${encodeURIComponent(openerId)}`),
+  validateOpenerGuess: (openerId: string, word: string) =>
+    post<OpenerValidationDto>(`/game/opener/${encodeURIComponent(openerId)}/validate`, { word }),
 }
