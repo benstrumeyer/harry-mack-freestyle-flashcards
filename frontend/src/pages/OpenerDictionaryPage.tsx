@@ -113,14 +113,6 @@ export default function OpenerDictionaryPage() {
     } catch { /* ignore */ }
   }
 
-  const unsaveByOpenerId = async (openerId: string) => {
-    const record = savedByOpenerId.get(openerId)
-    if (!record) return
-    try {
-      await api.unsaveOpener(record.id)
-      setSavedOpeners(prev => prev.filter(s => s.id !== record.id))
-    } catch { /* ignore */ }
-  }
 
   const removeSaved = async (id: string) => {
     try {

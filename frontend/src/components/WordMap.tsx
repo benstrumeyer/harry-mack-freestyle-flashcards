@@ -33,7 +33,7 @@ const HEIGHT = 500
 export default function WordMap({ nodes, edges }: Props) {
   const [positions, setPositions] = useState<NodePos[]>([])
   const [linkPositions, setLinkPositions] = useState<{ x1: number; y1: number; x2: number; y2: number; key: string }[]>([])
-  const simRef = useRef<ReturnType<typeof forceSimulation> | null>(null)
+  const simRef = useRef<{ stop: () => void } | null>(null)
 
   useEffect(() => {
     if (nodes.length === 0) return
