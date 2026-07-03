@@ -66,6 +66,10 @@ class ExtractRequest(BaseModel):
     url: str
     artist: str = "harry_mack"
     source_type: str = "freestyle"
+    # Spec 3 / Phase 6: ground-truth lyrics for the lyrics-align input path.
+    # When set (or fetchable via lyricsgenius) for a lyrics-align artist, the
+    # pipeline forced-aligns these instead of transcribing.
+    lyrics: str | None = None
 
 class Job(BaseModel):
     job_id: str

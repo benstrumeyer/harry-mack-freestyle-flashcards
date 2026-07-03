@@ -1,6 +1,6 @@
 import os
 
-from .models import ExtractRequest, ExtractResult, Analysis, Word, Bar
+from .models import ExtractRequest, ExtractResult, Analysis, Word, Bar, VideoMeta
 from . import config
 from .download import download, video_id
 from .separate import separate, vocals_path
@@ -9,6 +9,8 @@ from .diarize import diarize, keep_dominant
 from .segment import segment
 from .classify import classify
 from .label import label
+from .forced_align import align_lyrics
+from . import lyrics
 from .delivered import delivered_keys
 from .rhyme_events import build_events
 from .detectors import label_events, bar_final_events, DETECTOR_VERSION
@@ -28,6 +30,32 @@ def _delivered_for(full_words: list[Word], vocals: str | None) -> list[str | Non
         return delivered_keys(vocals, full_words)
     except Exception:
         return none
+
+
+def _words_for(req: ExtractRequest, vocals: str, models,
+               meta: "VideoMeta") -> list[Word]:
+    """Produce the full word list, selecting the input path by artist.
+
+    Lyrics-align path (Spec 3 / Phase 6): for artists in
+    ``lyrics.LYRICS_ALIGN_ARTISTS`` with ground-truth lyrics available (passed on
+    the request or fetched via optional lyricsgenius), forced-align those lyrics
+    to the vocal. Falls back to WhisperX transcription + diarization when the
+    artist isn't lyrics-align, no lyrics are available, or alignment yields
+    nothing — so the same downstream analyze() stage always gets a word list."""
+    model, align_model, align_meta = models
+    if lyrics.uses_lyrics_align(req.artist):
+        text = lyrics.resolve_lyrics(req, meta)
+        if text:
+            try:
+                aligned = align_lyrics(vocals, text)
+            except Exception:
+                aligned = []
+            if aligned:
+                return aligned
+        # degrade gracefully -> fall through to transcription
+    words = transcribe(vocals, model, align_model, align_meta)
+    words = keep_dominant(words, diarize(vocals))
+    return words
 
 
 def analyze(full_words: list[Word], bars: list[Bar],
@@ -70,15 +98,12 @@ def analyze(full_words: list[Word], bars: list[Bar],
 
 
 def run(req: ExtractRequest, models, on_progress) -> ExtractResult:
-    model, align_model, align_meta = models
     on_progress("download", 0.1)
     wav, meta = download(req.url, config.WORK_DIR)
     on_progress("separate", 0.3)
     vocals = separate(wav, config.WORK_DIR)
     on_progress("transcribe", 0.6)
-    words = transcribe(vocals, model, align_model, align_meta)
-    on_progress("diarize", 0.8)
-    words = keep_dominant(words, diarize(vocals))
+    words = _words_for(req, vocals, models, meta)
     on_progress("segment", 0.9)
     seg_bars = segment(words)
     bars = label(classify(seg_bars))                 # existing filtered behavior
@@ -92,7 +117,6 @@ def analyze_url(req: ExtractRequest, models, on_progress) -> ExtractResult:
     """POST /analyze path: produce an Analysis for a URL, reusing any cached
     wav/vocal in WORK_DIR so an already-ingested video is not re-downloaded or
     re-separated. Returns an ExtractResult with empty bars and analysis set."""
-    model, align_model, align_meta = models
     vid = video_id(req.url) or "audio"
     wav = os.path.join(config.WORK_DIR, f"{vid}.wav")
 
@@ -108,9 +132,7 @@ def analyze_url(req: ExtractRequest, models, on_progress) -> ExtractResult:
     vocals = cached_vocals if os.path.exists(cached_vocals) else separate(wav, config.WORK_DIR)
 
     on_progress("transcribe", 0.6)
-    words = transcribe(vocals, model, align_model, align_meta)
-    on_progress("diarize", 0.8)
-    words = keep_dominant(words, diarize(vocals))
+    words = _words_for(req, vocals, models, meta)
     on_progress("analyze", 0.95)
     analysis = analyze(words, segment(words), vocals, models)
     on_progress("done", 1.0)
