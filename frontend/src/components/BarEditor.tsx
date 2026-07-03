@@ -158,6 +158,32 @@ export default function BarEditor({ analysis, videoId }: Props) {
   function setType(wi: number, t: string) {
     setTypes((m) => { const n = { ...m }; if (n[wi] === t) delete n[wi]; else n[wi] = t; return n }); setDirty(true)
   }
+  function toggleOpener() { if (curWi != null) setType(curWi, 'opener') }
+
+  // ---- delete (also how you exclude off-song chatter: delete those bars, save) ----
+  function purgeWords(remove: Set<number>) {
+    setGroups((g) => { const n: Record<string, number[]> = {}; for (const [k, wis] of Object.entries(g)) { const f = wis.filter((x) => !remove.has(x)); if (f.length) n[k] = f } return n })
+    setTypes((m) => { const n = { ...m }; for (const wi of remove) delete n[wi]; return n })
+  }
+  function deleteWord() {
+    if (curWi == null) return
+    const wi = curWi; const barEmptied = (bars[cur.b]?.length ?? 0) <= 1
+    setBars((prev) => {
+      const b = prev.map((x) => [...x]); b[cur.b] = b[cur.b]!.filter((_, i) => i !== cur.w)
+      if (!b[cur.b]!.length) b.splice(cur.b, 1); return b
+    })
+    if (barEmptied) setParas((p) => p.filter((x) => x !== cur.b).map((x) => (x > cur.b ? x - 1 : x)))
+    purgeWords(new Set([wi]))
+    setCur((c) => barEmptied ? { b: Math.max(0, Math.min(c.b, bars.length - 2)), w: 0 } : { b: c.b, w: Math.max(0, Math.min(c.w, (bars[c.b]?.length ?? 1) - 2)) })
+    setDirty(true)
+  }
+  function deleteBar() {
+    const wis = new Set(bars[cur.b] ?? [])
+    setBars((prev) => { const b = prev.map((x) => [...x]); b.splice(cur.b, 1); return b })
+    setParas((p) => p.filter((x) => x !== cur.b).map((x) => (x > cur.b ? x - 1 : x)))
+    purgeWords(wis)
+    setCur((c) => ({ b: Math.max(0, Math.min(c.b, bars.length - 2)), w: 0 })); setDirty(true)
+  }
 
   function onKeyDown(e: React.KeyboardEvent) {
     const k = e.key
@@ -173,7 +199,10 @@ export default function BarEditor({ analysis, videoId }: Props) {
     if (k === 'r') { e.preventDefault(); newSlantFamily(); return }
     if (k === 'f') { e.preventDefault(); e.shiftKey ? joinPrev() : splitAtCur(); return }
     if (k === 't') { e.preventDefault(); toggleVerse(); return }
+    if (k === 'o') { e.preventDefault(); toggleOpener(); return }
     if (TYPE_KEYS[k] && curWi != null) { e.preventDefault(); setType(curWi, TYPE_KEYS[k]!); return }
+    if (k === 'G' || (k === 'Delete' && e.shiftKey)) { e.preventDefault(); deleteBar(); return }
+    if (k === 'g' || k === 'Delete') { e.preventDefault(); deleteWord(); return }
     // right-hand fallbacks
     if (k === 'Enter' && e.shiftKey) { e.preventDefault(); toggleVerse(); return }
     if (k === 'Enter') { e.preventDefault(); splitAtCur(); return }
@@ -198,12 +227,14 @@ export default function BarEditor({ analysis, videoId }: Props) {
   function wordStyle(wi: number, isCur: boolean): React.CSSProperties {
     const gid = gidOfWord.get(wi); const t = effType(wi)
     const hue = gid != null ? families.info.get(gid)?.hue ?? null : null
+    const opener = t === 'opener'
     return {
       cursor: 'pointer', padding: '0 3px', borderRadius: 3,
-      background: hue != null ? `hsl(${hue} 75% 50% / 0.42)` : (isCur ? 'rgba(255,255,255,0.08)' : undefined),
+      background: hue != null ? `hsl(${hue} 75% 50% / 0.42)` : (opener ? 'rgba(120,180,255,0.14)' : (isCur ? 'rgba(255,255,255,0.08)' : undefined)),
       fontWeight: t === 'end' ? 700 : 400, fontStyle: t === 'slant' ? 'italic' : undefined,
       textDecoration: t === 'internal' || t === 'multi' ? 'underline' : undefined,
       textDecorationStyle: t === 'multi' ? 'double' : t === 'internal' ? 'dotted' : undefined, textUnderlineOffset: '2px',
+      boxShadow: opener ? 'inset 0 -2px 0 0 var(--color-primary)' : undefined,
       outline: isCur ? '2px solid var(--color-primary)' : undefined,
     }
   }
@@ -213,7 +244,7 @@ export default function BarEditor({ analysis, videoId }: Props) {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: '0.74rem', color: 'var(--color-muted)' }}>
-          <kbd>WASD</kbd>/<kbd>←→↑↓</kbd> move · <kbd>Space</kbd> group rhyme · <kbd>Q/E</kbd> family · <kbd>R</kbd> slant · <kbd>F</kbd> split · <kbd>T</kbd> verse · <kbd>Z/X/C</kbd> internal/slant/multi
+          <kbd>WASD</kbd> move · <kbd>Space</kbd> rhyme · <kbd>Q/E</kbd> family · <kbd>R</kbd> slant · <kbd>F</kbd> split · <kbd>T</kbd> verse · <kbd>O</kbd> opener · <kbd>G</kbd> del word / <kbd>Shift+G</kbd> del bar · <kbd>Z/X/C</kbd> internal/slant/multi
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: '0.72rem', color: 'var(--color-muted)' }}>{status}</span>
