@@ -10,7 +10,7 @@ afterEach(() => {
 })
 
 const analysis: VideoAnalysisDto = {
-  video: { id: 'vjb7TegEIYs', title: 'HM Freestyle', artist: 'harry_mack', barCount: 2, wordCount: 4, density: 0.5 },
+  video: { id: 'vjb7TegEIYs', title: 'HM Freestyle', artist: 'harry_mack', barCount: 2, wordCount: 4, density: 0.5, youtubeId: 'vjb7TegEIYs' },
   words: [
     { wordIndex: 0, text: 'i', start: 0.0, end: 0.1, score: 1, ipa: null, vowelSeq: null, deliveredIpa: null },
     { wordIndex: 1, text: 'explore', start: 0.1, end: 0.5, score: 1, ipa: 'ɛksplɔːɹ', vowelSeq: ['ɛ', 'ɔː'], deliveredIpa: 'or' },

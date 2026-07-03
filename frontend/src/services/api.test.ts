@@ -19,7 +19,7 @@ function mockFetchOnce(payload: unknown) {
 describe('api.getVideos', () => {
   it('GETs /api/videos and returns typed summaries', async () => {
     const payload: VideoSummaryDto[] = [
-      { id: 'vjb7TegEIYs', title: 'HM', artist: 'harry_mack', barCount: 12, wordCount: 80, density: 0.42 },
+      { id: 'vjb7TegEIYs', title: 'HM', artist: 'harry_mack', barCount: 12, wordCount: 80, density: 0.42, youtubeId: 'vjb7TegEIYs' },
     ]
     const fetchMock = mockFetchOnce(payload)
     const res = await api.getVideos()
@@ -32,7 +32,7 @@ describe('api.getVideos', () => {
 describe('api.getVideoAnalysis', () => {
   it('GETs /api/videos/:id/analysis and returns a typed VideoAnalysisDto', async () => {
     const payload: VideoAnalysisDto = {
-      video: { id: 'v1', title: 'HM', artist: 'harry_mack', barCount: 2, wordCount: 4, density: 0.5 },
+      video: { id: 'v1', title: 'HM', artist: 'harry_mack', barCount: 2, wordCount: 4, density: 0.5, youtubeId: 'v1' },
       words: [
         { wordIndex: 1, text: 'explore', start: 0.1, end: 0.5, score: 1.0, ipa: 'ɛksplɔːɹ', vowelSeq: ['ɛ', 'ɔː'], deliveredIpa: 'or' },
       ],

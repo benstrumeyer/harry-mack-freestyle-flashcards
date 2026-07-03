@@ -42,7 +42,8 @@ public record AnalysisDto(
 
 // One row per video for the Songs list (`GET /api/videos`).
 public record VideoSummaryDto(
-    string Id, string? Title, string? Artist, int BarCount, int WordCount, double? Density);
+    string Id, string? Title, string? Artist, int BarCount, int WordCount, double? Density,
+    string? YoutubeId = null);
 
 // One full-transcript word (`transcript_words`).
 public record TranscriptWordDto(

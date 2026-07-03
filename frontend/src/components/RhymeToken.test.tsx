@@ -15,9 +15,9 @@ describe('RhymeToken', () => {
     const span = container.querySelector('span') as HTMLSpanElement
     expect(span).not.toBeNull()
     expect(span.textContent).toBe('explore')
-    // jsdom's CSSOM normalizes hsl(...) to rgba(...); assert the tint (0.45 alpha) applied.
+    // jsdom's CSSOM normalizes hsl(...) to rgba(...); assert the tint (0.32 default alpha) applied.
     expect(span.style.background).not.toBe('')
-    expect(span.style.background).toContain('0.45')
+    expect(span.style.background).toContain('0.32')
     // tooltip reveals the shared rhyme sound + detector type
     expect(span.title).toBe('rhymes: o@ · perfect-end')
   })

@@ -114,6 +114,7 @@ export interface VideoSummaryDto {
   barCount: number
   wordCount: number
   density: number | null
+  youtubeId: string | null
 }
 
 export interface TranscriptWordDto {

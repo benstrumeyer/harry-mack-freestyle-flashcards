@@ -24,7 +24,7 @@ public class VideosController : ControllerBase
             SELECT v.id, v.title, v.artist,
                    (SELECT COUNT(*) FROM bars b WHERE b.video_id = v.id) AS bar_count,
                    (SELECT COUNT(*) FROM transcript_words tw WHERE tw.video_id = v.id) AS word_count,
-                   ra.density
+                   ra.density, v.youtube_id
             FROM videos v
             LEFT JOIN rhyme_annotations ra ON ra.video_id = v.id
             ORDER BY v.processed_at DESC, v.title";
@@ -38,7 +38,8 @@ public class VideosController : ControllerBase
                 reader.IsDBNull(2) ? null : reader.GetString(2),
                 reader.GetInt32(3),
                 reader.GetInt32(4),
-                reader.IsDBNull(5) ? null : reader.GetDouble(5)));
+                reader.IsDBNull(5) ? null : reader.GetDouble(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6)));
         }
         return Ok(result);
     }
@@ -57,7 +58,7 @@ public class VideosController : ControllerBase
                 SELECT v.id, v.title, v.artist,
                        (SELECT COUNT(*) FROM bars b WHERE b.video_id = v.id) AS bar_count,
                        (SELECT COUNT(*) FROM transcript_words tw WHERE tw.video_id = v.id) AS word_count,
-                       ra.density
+                       ra.density, v.youtube_id
                 FROM videos v
                 LEFT JOIN rhyme_annotations ra ON ra.video_id = v.id
                 WHERE v.id = $id";
@@ -70,7 +71,8 @@ public class VideosController : ControllerBase
                     r.IsDBNull(2) ? null : r.GetString(2),
                     r.GetInt32(3),
                     r.GetInt32(4),
-                    r.IsDBNull(5) ? null : r.GetDouble(5));
+                    r.IsDBNull(5) ? null : r.GetDouble(5),
+                    r.IsDBNull(6) ? null : r.GetString(6));
         }
 
         if (summary is null)
