@@ -19,6 +19,11 @@ __pycache__/
 *.pyc
 *.vtt
 pipeline/raw/
+.venv/
+.venv*/
+
+# Local SQLite (runtime data — created on first API run)
+*.db
 
 # IDE
 .vs/
