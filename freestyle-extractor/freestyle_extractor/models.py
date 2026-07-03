@@ -34,6 +34,12 @@ class RhymeEvent(BaseModel):
     vowel_seq: list[str] = []
     stress: int = 0
 
+class RhymeGroup(BaseModel):
+    group_index: int
+    hue: int
+    word_indices: list[int]
+    key: str
+
 class VideoMeta(BaseModel):
     youtube_id: str | None
     title: str | None
