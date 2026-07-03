@@ -145,4 +145,7 @@ export const api = {
     post<SessionDto>('/sessions', { cardsShown }),
   getSessions: () =>
     get<SessionDto[]>('/sessions'),
+
+  getWordList: (artist = 'harry_mack') =>
+    get<{ words: [string, number, string, number][]; openers: string[] }>(`/game/wordlist/${artist}`),
 }

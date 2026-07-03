@@ -3,6 +3,7 @@ import FlashcardPage from './pages/FlashcardPage'
 import OpenerDictionaryPage from './pages/OpenerDictionaryPage'
 import RhymeDictionaryPage from './pages/RhymeDictionaryPage'
 import PipelinePage from './pages/PipelinePage'
+import RhymeGamePage from './pages/RhymeGamePage'
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
           { to: '/openers', label: 'Openers', end: false },
           { to: '/rhymes', label: 'Rhymes', end: false },
           { to: '/pipeline', label: 'Pipeline', end: false },
+          { to: '/game', label: 'Rhyme Game', end: false },
         ].map(({ to, label, end }) => (
           <NavLink
             key={to}
@@ -44,6 +46,7 @@ function App() {
         <Route path="/openers" element={<OpenerDictionaryPage />} />
         <Route path="/rhymes" element={<RhymeDictionaryPage />} />
         <Route path="/pipeline" element={<PipelinePage />} />
+        <Route path="/game" element={<RhymeGamePage />} />
       </Routes>
     </BrowserRouter>
   )
