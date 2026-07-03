@@ -49,7 +49,26 @@ public sealed class Db(string connectionString)
             cards_shown TEXT DEFAULT '[]');
         CREATE TABLE IF NOT EXISTS saved_openers (
             id TEXT PRIMARY KEY, opener_id TEXT REFERENCES openers(id) ON DELETE SET NULL,
-            text TEXT NOT NULL, saved_at TEXT DEFAULT (datetime('now')));";
+            text TEXT NOT NULL, saved_at TEXT DEFAULT (datetime('now')));
+        CREATE TABLE IF NOT EXISTS transcript_words (
+            id TEXT PRIMARY KEY, video_id TEXT REFERENCES videos(id) ON DELETE CASCADE,
+            word_index INTEGER, text TEXT, start_seconds REAL, end_seconds REAL,
+            score REAL, ipa TEXT, vowel_seq TEXT, delivered_ipa TEXT);
+        CREATE TABLE IF NOT EXISTS rhyme_groups (
+            id TEXT PRIMARY KEY, video_id TEXT REFERENCES videos(id) ON DELETE CASCADE,
+            group_index INTEGER, hue INTEGER, size INTEGER, key TEXT);
+        CREATE TABLE IF NOT EXISTS rhyme_events (
+            id TEXT PRIMARY KEY, video_id TEXT REFERENCES videos(id) ON DELETE CASCADE,
+            word_index INTEGER, bar_index INTEGER, intra_bar_index INTEGER,
+            canonical_key TEXT, delivered_key TEXT, detector TEXT,
+            group_index INTEGER, stress INTEGER);
+        CREATE TABLE IF NOT EXISTS rhyme_annotations (
+            video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+            detector_version INTEGER, scheme_json TEXT, density REAL,
+            created_at TEXT DEFAULT (datetime('now')));
+        CREATE TABLE IF NOT EXISTS bar_labels (
+            bar_id TEXT REFERENCES bars(id) ON DELETE CASCADE,
+            detector TEXT, scheme TEXT, PRIMARY KEY (bar_id));";
         await cmd.ExecuteNonQueryAsync();
     }
 }
