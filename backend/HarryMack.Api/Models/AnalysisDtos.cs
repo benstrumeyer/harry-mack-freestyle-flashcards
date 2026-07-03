@@ -79,3 +79,9 @@ public record VideoAnalysisDto(
 
 // Result of re-triggering the analyze stage for an existing video.
 public record ReanalyzeResultDto(string Message, int Events, int Groups, double Density);
+
+// Sidecar `/auto-annotate` response — proposed rhyme groups (groupId -> word
+// indices) plus a per-group confidence. Bound with SnakeCaseLower.
+public record AutoAnnotateResultDto(
+    Dictionary<string, List<int>> Groups,
+    Dictionary<string, double> Confidences);

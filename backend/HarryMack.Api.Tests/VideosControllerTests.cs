@@ -69,7 +69,7 @@ public class VideosControllerTests
     public async Task GetVideos_ReturnsSummaryWithCountsAndDensity()
     {
         var (db, videoId) = await SeedAsync("memdb_videos_list", new SeedExtractor());
-        var controller = new VideosController(db);
+        var controller = new VideosController(db, new SeedExtractor());
 
         var result = await controller.GetVideos();
         var ok = Assert.IsType<OkObjectResult>(result.Result);
@@ -88,7 +88,7 @@ public class VideosControllerTests
     public async Task GetAnalysis_ReturnsWordsEventsGroupsSchemeDensity()
     {
         var (db, videoId) = await SeedAsync("memdb_videos_analysis", new SeedExtractor());
-        var controller = new VideosController(db);
+        var controller = new VideosController(db, new SeedExtractor());
 
         var result = await controller.GetAnalysis(videoId);
         var ok = Assert.IsType<OkObjectResult>(result.Result);
@@ -113,7 +113,7 @@ public class VideosControllerTests
     public async Task GetAnalysis_UnknownVideo_ReturnsNotFound()
     {
         var (db, _) = await SeedAsync("memdb_videos_404", new SeedExtractor());
-        var controller = new VideosController(db);
+        var controller = new VideosController(db, new SeedExtractor());
 
         var result = await controller.GetAnalysis("does-not-exist");
         Assert.IsType<NotFoundObjectResult>(result.Result);
@@ -164,11 +164,141 @@ public class VideosControllerTests
         Assert.IsType<NotFoundObjectResult>(result);
     }
 
+    // Captures the analysis/engine/draft handed to the sidecar and returns a
+    // canned draft (word indices 2 and 6 co-grouped).
+    class CapturingExtractor : IExtractorClient
+    {
+        public AnalysisDto? Analysis;
+        public string? Engine;
+        public UserAnnotationDto? AiDraft;
+        public AutoAnnotateResultDto Result = new(
+            new Dictionary<string, List<int>> { { "0", new() { 2, 6 } } },
+            new Dictionary<string, double> { { "0", 1.0 } });
+
+        public Task<ExtractResultDto> ExtractAsync(string url, string artist, CancellationToken ct) =>
+            throw new NotImplementedException();
+
+        public Task<AutoAnnotateResultDto> AutoAnnotateAsync(
+            AnalysisDto analysis, string engine, UserAnnotationDto? aiDraft, CancellationToken ct)
+        {
+            Analysis = analysis; Engine = engine; AiDraft = aiDraft;
+            return Task.FromResult(Result);
+        }
+    }
+
+    [Theory]
+    [InlineData("ensemble")]
+    [InlineData("local")]
+    public async Task GetAutoAnnotate_ComputesDraftViaSidecar(string engine)
+    {
+        var (db, videoId) = await SeedAsync($"memdb_autoanno_{engine}", new SeedExtractor());
+        var extractor = new CapturingExtractor();
+        var controller = new VideosController(db, extractor);
+
+        var result = await controller.GetAutoAnnotate(videoId, engine);
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var draft = Assert.IsType<UserAnnotationDto>(ok.Value);
+
+        // The sidecar-proposed groups come back as the draft's groups.
+        Assert.Equal(new List<int> { 2, 6 }, draft.Groups["0"]);
+        // The engine is forwarded, and the persisted analysis is reconstructed.
+        Assert.Equal(engine, extractor.Engine);
+        Assert.NotNull(extractor.Analysis);
+        Assert.Equal(2, extractor.Analysis!.Events.Count);
+        Assert.Equal("care", extractor.Analysis.Events[0].Text);
+        Assert.Equal("e@r", extractor.Analysis.Events[0].CanonicalKey);
+    }
+
+    [Fact]
+    public async Task GetAutoAnnotate_Ai_ReturnsStoredDraft()
+    {
+        var (db, videoId) = await SeedAsync("memdb_autoanno_ai", new SeedExtractor());
+        var controller = new VideosController(db, new CapturingExtractor());
+
+        var stored = new UserAnnotationDto(
+            new List<List<int>> { new() { 0, 1, 2 } },
+            new Dictionary<string, List<int>> { { "e@r", new() { 2, 6 } } });
+        await controller.PutAiDraft(videoId, stored);
+
+        var result = await controller.GetAutoAnnotate(videoId, "ai");
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var draft = Assert.IsType<UserAnnotationDto>(ok.Value);
+        Assert.Equal(stored.Bars, draft.Bars);
+        Assert.Equal(stored.Groups, draft.Groups);
+    }
+
+    [Fact]
+    public async Task GetAutoAnnotate_Ai_NoDraft_ReturnsNoContent()
+    {
+        var (db, videoId) = await SeedAsync("memdb_autoanno_ai_empty", new SeedExtractor());
+        var controller = new VideosController(db, new CapturingExtractor());
+
+        var result = await controller.GetAutoAnnotate(videoId, "ai");
+        Assert.IsType<NoContentResult>(result.Result);
+    }
+
+    [Fact]
+    public async Task GetAutoAnnotate_ForwardsStoredAiDraftAsSignal()
+    {
+        var (db, videoId) = await SeedAsync("memdb_autoanno_signal", new SeedExtractor());
+        var extractor = new CapturingExtractor();
+        var controller = new VideosController(db, extractor);
+
+        var aiDraft = new UserAnnotationDto(
+            new List<List<int>>(),
+            new Dictionary<string, List<int>> { { "e@r", new() { 2, 6 } } });
+        await controller.PutAiDraft(videoId, aiDraft);
+
+        await controller.GetAutoAnnotate(videoId, "ensemble");
+        Assert.NotNull(extractor.AiDraft);
+        Assert.Equal(aiDraft.Groups, extractor.AiDraft!.Groups);
+    }
+
+    [Fact]
+    public async Task GetAutoAnnotate_NeverOverwritesSavedAnnotation()
+    {
+        var (db, videoId) = await SeedAsync("memdb_autoanno_safe", new SeedExtractor());
+        var controller = new VideosController(db, new CapturingExtractor());
+
+        var saved = new UserAnnotationDto(
+            new List<List<int>> { new() { 0, 1 } },
+            new Dictionary<string, List<int>> { { "mine", new() { 0, 1 } } });
+        await controller.PutAnnotation(videoId, saved);
+
+        await controller.GetAutoAnnotate(videoId, "ensemble");
+
+        var annResult = await controller.GetAnnotation(videoId);
+        var annOk = Assert.IsType<OkObjectResult>(annResult.Result);
+        var ann = Assert.IsType<UserAnnotationDto>(annOk.Value);
+        Assert.Equal(saved.Bars, ann.Bars);
+        Assert.Equal(saved.Groups, ann.Groups);
+    }
+
+    [Fact]
+    public async Task GetAutoAnnotate_UnknownVideo_ReturnsNotFound()
+    {
+        var (db, _) = await SeedAsync("memdb_autoanno_404", new SeedExtractor());
+        var controller = new VideosController(db, new CapturingExtractor());
+
+        var result = await controller.GetAutoAnnotate("nope", "ensemble");
+        Assert.IsType<NotFoundObjectResult>(result.Result);
+    }
+
+    [Fact]
+    public async Task GetAutoAnnotate_UnknownEngine_ReturnsBadRequest()
+    {
+        var (db, videoId) = await SeedAsync("memdb_autoanno_badengine", new SeedExtractor());
+        var controller = new VideosController(db, new CapturingExtractor());
+
+        var result = await controller.GetAutoAnnotate(videoId, "gpt");
+        Assert.IsType<BadRequestObjectResult>(result.Result);
+    }
+
     [Fact]
     public async Task GetAiDraft_NoDraft_ReturnsNoContent()
     {
         var (db, videoId) = await SeedAsync("memdb_aidraft_empty", new SeedExtractor());
-        var controller = new VideosController(db);
+        var controller = new VideosController(db, new SeedExtractor());
 
         var result = await controller.GetAiDraft(videoId);
         Assert.IsType<NoContentResult>(result.Result);
@@ -178,7 +308,7 @@ public class VideosControllerTests
     public async Task PutThenGetAiDraft_RoundTrips()
     {
         var (db, videoId) = await SeedAsync("memdb_aidraft_roundtrip", new SeedExtractor());
-        var controller = new VideosController(db);
+        var controller = new VideosController(db, new SeedExtractor());
 
         var draft = new UserAnnotationDto(
             Bars: new List<List<int>> { new() { 0, 1, 2 }, new() { 3, 4, 5, 6 } },
@@ -203,7 +333,7 @@ public class VideosControllerTests
     public async Task PutAiDraft_Twice_OverwritesDraftOnly()
     {
         var (db, videoId) = await SeedAsync("memdb_aidraft_overwrite", new SeedExtractor());
-        var controller = new VideosController(db);
+        var controller = new VideosController(db, new SeedExtractor());
 
         var first = new UserAnnotationDto(
             new List<List<int>> { new() { 0 } },
@@ -226,7 +356,7 @@ public class VideosControllerTests
     public async Task AiDraft_IsSeparateFromSavedAnnotation()
     {
         var (db, videoId) = await SeedAsync("memdb_aidraft_separate", new SeedExtractor());
-        var controller = new VideosController(db);
+        var controller = new VideosController(db, new SeedExtractor());
 
         // User saves their own annotation.
         var saved = new UserAnnotationDto(

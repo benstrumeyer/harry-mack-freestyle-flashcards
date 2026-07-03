@@ -71,6 +71,19 @@ class ExtractRequest(BaseModel):
     # pipeline forced-aligns these instead of transcribing.
     lyrics: str | None = None
 
+class AutoAnnotateRequest(BaseModel):
+    # A precomputed Analysis (the backend reconstructs it from its persisted
+    # transcript_words + rhyme_events), the engine, and an optional AI draft
+    # (UserAnnotationDto-shaped) whose co-groupings feed the ensemble as one
+    # independent signal. No URL, no re-transcription, no API key.
+    analysis: Analysis
+    engine: str = "ensemble"          # "local" | "ensemble"
+    ai_draft: dict | None = None
+
+class AutoAnnotateResult(BaseModel):
+    groups: dict[str, list[int]] = {}
+    confidences: dict[str, float] = {}
+
 class Job(BaseModel):
     job_id: str
     status: str = "queued"      # queued | running | done | failed

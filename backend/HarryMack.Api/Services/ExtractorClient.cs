@@ -12,6 +12,13 @@ public interface IExtractorClient
     // existing test doubles that only fake extraction keep compiling.
     Task<AnalysisDto> AnalyzeAsync(string url, CancellationToken ct) =>
         throw new NotImplementedException();
+
+    // Compute an ensemble/local auto-annotate DRAFT for a precomputed analysis
+    // (sidecar POST /auto-annotate). Key-free: no LLM call, no re-transcription.
+    // Default throws so existing test doubles keep compiling.
+    Task<AutoAnnotateResultDto> AutoAnnotateAsync(
+        AnalysisDto analysis, string engine, UserAnnotationDto? aiDraft, CancellationToken ct) =>
+        throw new NotImplementedException();
 }
 
 public class ExtractorClient(HttpClient http) : IExtractorClient
@@ -38,6 +45,17 @@ public class ExtractorClient(HttpClient http) : IExtractorClient
         var result = await PollAsync(enq, ct);
         return result.Analysis
             ?? throw new InvalidOperationException("analyze job returned no analysis");
+    }
+
+    public async Task<AutoAnnotateResultDto> AutoAnnotateAsync(
+        AnalysisDto analysis, string engine, UserAnnotationDto? aiDraft, CancellationToken ct)
+    {
+        // Synchronous sidecar route (ensemble is cheap — no download/transcribe/GPU).
+        var resp = await http.PostAsJsonAsync("/auto-annotate",
+            new { analysis, engine, ai_draft = aiDraft }, J, ct);
+        resp.EnsureSuccessStatusCode();
+        return await resp.Content.ReadFromJsonAsync<AutoAnnotateResultDto>(J, ct)
+            ?? throw new InvalidOperationException("auto-annotate returned no result");
     }
 
     // Poll a just-enqueued sidecar job to completion and return its ExtractResult.

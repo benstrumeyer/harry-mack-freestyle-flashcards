@@ -59,12 +59,15 @@ def pair_signals(a: RhymeEvent, b: RhymeEvent, *,
                  model=None,
                  ai_group_of: dict[int, str] | None = None,
                  vowel_run_min: int = VOWEL_RUN_MIN,
-                 model_threshold: float = MODEL_THRESHOLD) -> dict[str, bool]:
+                 model_threshold: float = MODEL_THRESHOLD,
+                 only: set[str] | None = None) -> dict[str, bool]:
     """Independent yes/no votes for a candidate pair.
 
     A signal is OMITTED (abstains) when it has nothing to say — e.g. neither
     word carries a delivered key, or no model was supplied — so it never counts
-    against the pair in `combine`."""
+    against the pair in `combine`. When ``only`` is given, the result is
+    restricted to those signal names (e.g. ``{"model"}`` for a model-only
+    engine); other signals are dropped even when present."""
     sig: dict[str, bool] = {}
 
     if a.canonical_key or b.canonical_key:
@@ -83,6 +86,9 @@ def pair_signals(a: RhymeEvent, b: RhymeEvent, *,
     if ai_group_of is not None:
         ga, gb = ai_group_of.get(a.word_index), ai_group_of.get(b.word_index)
         sig["ai_draft"] = ga is not None and ga == gb
+
+    if only is not None:
+        sig = {k: v for k, v in sig.items() if k in only}
 
     return sig
 
@@ -129,7 +135,8 @@ def auto_annotate(analysis, ai_draft=None, *,
                   min_signals: int = DEFAULT_MIN_SIGNALS,
                   window_bars: int = WINDOW_BARS,
                   vowel_run_min: int = VOWEL_RUN_MIN,
-                  model_threshold: float = MODEL_THRESHOLD) -> AutoAnnotation:
+                  model_threshold: float = MODEL_THRESHOLD,
+                  only: set[str] | None = None) -> AutoAnnotation:
     """Ensemble auto-annotation: propose rhyme groups + confidences.
 
     Consumes an `Analysis` (or its `.events` / a raw event list), an optional
@@ -147,7 +154,8 @@ def auto_annotate(analysis, ai_draft=None, *,
         if abs(a.bar_index - b.bar_index) > window_bars:
             continue
         sig = pair_signals(a, b, model=model, ai_group_of=ai_group_of,
-                           vowel_run_min=vowel_run_min, model_threshold=model_threshold)
+                           vowel_run_min=vowel_run_min, model_threshold=model_threshold,
+                           only=only)
         proposed, conf = combine(sig, min_signals=min_signals)
         if proposed:
             _union(parent, a.word_index, b.word_index)

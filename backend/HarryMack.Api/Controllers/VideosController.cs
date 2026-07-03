@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HarryMack.Api.Data;
 using HarryMack.Api.Models;
+using HarryMack.Api.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 
@@ -11,8 +12,13 @@ namespace HarryMack.Api.Controllers;
 public class VideosController : ControllerBase
 {
     private readonly Db _db;
+    private readonly IExtractorClient _extractor;
 
-    public VideosController(Db db) => _db = db;
+    public VideosController(Db db, IExtractorClient extractor)
+    {
+        _db = db;
+        _extractor = extractor;
+    }
 
     // GET /api/videos — one summary row per ingested video for the Songs list.
     [HttpGet]
@@ -252,6 +258,115 @@ public class VideosController : ControllerBase
         cmd.Parameters.AddWithValue("$draft", JsonSerializer.Serialize(body));
         await cmd.ExecuteNonQueryAsync();
         return NoContent();
+    }
+
+    // GET /api/videos/{id}/auto-annotate?engine=local|ensemble|ai — a first-pass
+    // suggestion DRAFT the editor can accept/correct. NEVER writes anything: it
+    // never overwrites the user's saved annotation, and never persists.
+    //   * ai       — returns the stored Claude-Code AI draft (204 if none).
+    //   * local    — model-only draft from the local rhyme model (via sidecar).
+    //   * ensemble — precision-favored hybrid of all signals (via sidecar).
+    // Key-free: the sidecar path calls no LLM API and re-transcribes nothing.
+    [HttpGet("{id}/auto-annotate")]
+    public async Task<ActionResult<UserAnnotationDto>> GetAutoAnnotate(
+        string id, [FromQuery] string engine = "ensemble", CancellationToken ct = default)
+    {
+        engine = (engine ?? "ensemble").ToLowerInvariant();
+        if (engine != "local" && engine != "ensemble" && engine != "ai")
+            return BadRequest($"Unknown engine '{engine}'. Use local, ensemble or ai.");
+
+        await using var conn = _db.Open();
+
+        // Confirm the video exists.
+        await using (var vc = conn.CreateCommand())
+        {
+            vc.CommandText = "SELECT 1 FROM videos WHERE id = $id";
+            vc.Parameters.AddWithValue("$id", id);
+            if (await vc.ExecuteScalarAsync() is null)
+                return NotFound($"No video with id {id}.");
+        }
+
+        // The AI engine just surfaces the stored Claude-Code draft as-is.
+        if (engine == "ai")
+            return await GetAiDraft(id);
+
+        // local / ensemble: reconstruct the persisted analysis and let the
+        // sidecar run the ensemble. Feed the stored AI draft as one signal.
+        var analysis = await BuildAnalysisAsync(conn, id);
+        var aiDraft = await LoadAiDraftAsync(conn, id);
+        var result = await _extractor.AutoAnnotateAsync(analysis, engine, aiDraft, ct);
+
+        // The draft carries only the proposed groups; bars/paras/types are left
+        // for the editor to fill in from the suggestion.
+        return Ok(new UserAnnotationDto(
+            Bars: new List<List<int>>(),
+            Groups: result.Groups,
+            Paras: new List<int>(),
+            Types: new Dictionary<string, string>()));
+    }
+
+    // Reconstruct a sidecar-shaped AnalysisDto from the persisted transcript_words
+    // + rhyme_events (the ensemble only reads events + words).
+    private static async Task<AnalysisDto> BuildAnalysisAsync(SqliteConnection conn, string id)
+    {
+        var words = new List<WordDto>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"
+                SELECT text, start_seconds, end_seconds, score
+                FROM transcript_words WHERE video_id = $id ORDER BY word_index";
+            cmd.Parameters.AddWithValue("$id", id);
+            await using var r = await cmd.ExecuteReaderAsync();
+            while (await r.ReadAsync())
+                words.Add(new WordDto(
+                    r.GetString(0), r.GetDouble(1), r.GetDouble(2),
+                    r.IsDBNull(3) ? 1.0 : r.GetDouble(3)));
+        }
+
+        var events = new List<RhymeEventDto>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"
+                SELECT e.word_index, w.text, e.bar_index, e.intra_bar_index,
+                       w.start_seconds, w.end_seconds, e.canonical_key, e.delivered_key,
+                       w.vowel_seq, e.stress, e.detector, e.group_index
+                FROM rhyme_events e
+                JOIN transcript_words w
+                  ON w.video_id = e.video_id AND w.word_index = e.word_index
+                WHERE e.video_id = $id
+                ORDER BY e.word_index";
+            cmd.Parameters.AddWithValue("$id", id);
+            await using var r = await cmd.ExecuteReaderAsync();
+            while (await r.ReadAsync())
+                events.Add(new RhymeEventDto(
+                    r.GetInt32(0),
+                    r.GetString(1),
+                    r.GetInt32(2),
+                    r.GetInt32(3),
+                    r.GetDouble(4),
+                    r.GetDouble(5),
+                    r.IsDBNull(6) ? null : r.GetString(6),
+                    r.IsDBNull(7) ? null : r.GetString(7),
+                    r.IsDBNull(8) ? new List<string>() : JsonSerializer.Deserialize<List<string>>(r.GetString(8)) ?? new(),
+                    r.IsDBNull(9) ? 0 : r.GetInt32(9),
+                    r.IsDBNull(10) ? null : r.GetString(10),
+                    r.IsDBNull(11) ? null : r.GetInt32(11)));
+        }
+
+        return new AnalysisDto(words, events, new List<RhymeGroupDto>(),
+            new Dictionary<int, string>(), new Dictionary<int, string>(), 0.0, 0);
+    }
+
+    // The user's stored Claude-Code AI draft (null when none), used as one of the
+    // ensemble's independent signals.
+    private static async Task<UserAnnotationDto?> LoadAiDraftAsync(SqliteConnection conn, string id)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT ai_draft_json FROM user_annotations WHERE video_id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        var raw = await cmd.ExecuteScalarAsync();
+        if (raw is not string json || json.Length == 0) return null;
+        return JsonSerializer.Deserialize<UserAnnotationDto>(json);
     }
 
     // Aggregate the user's saved rhyme groups (keyed by rhyme sound) into
