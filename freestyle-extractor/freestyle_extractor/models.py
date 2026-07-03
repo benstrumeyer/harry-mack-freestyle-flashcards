@@ -17,6 +17,23 @@ class Bar(BaseModel):
     is_freestyle: bool = True
     speaker: str | None = None
 
+class WordPhon(BaseModel):
+    ipa: str
+    vowel_seq: list[str]
+    n_syllables: int
+
+class RhymeEvent(BaseModel):
+    word_index: int
+    text: str
+    bar_index: int
+    intra_bar_index: int
+    start: float
+    end: float
+    canonical_key: str | None = None
+    delivered_key: str | None = None
+    vowel_seq: list[str] = []
+    stress: int = 0
+
 class VideoMeta(BaseModel):
     youtube_id: str | None
     title: str | None
