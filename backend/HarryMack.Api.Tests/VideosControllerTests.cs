@@ -163,4 +163,93 @@ public class VideosControllerTests
         var result = await controller.Analyze("nope");
         Assert.IsType<NotFoundObjectResult>(result);
     }
+
+    [Fact]
+    public async Task GetAiDraft_NoDraft_ReturnsNoContent()
+    {
+        var (db, videoId) = await SeedAsync("memdb_aidraft_empty", new SeedExtractor());
+        var controller = new VideosController(db);
+
+        var result = await controller.GetAiDraft(videoId);
+        Assert.IsType<NoContentResult>(result.Result);
+    }
+
+    [Fact]
+    public async Task PutThenGetAiDraft_RoundTrips()
+    {
+        var (db, videoId) = await SeedAsync("memdb_aidraft_roundtrip", new SeedExtractor());
+        var controller = new VideosController(db);
+
+        var draft = new UserAnnotationDto(
+            Bars: new List<List<int>> { new() { 0, 1, 2 }, new() { 3, 4, 5, 6 } },
+            Groups: new Dictionary<string, List<int>> { { "e@r", new() { 2, 6 } } },
+            Paras: new List<int> { 0 },
+            Types: new Dictionary<string, string> { { "2", "end" }, { "6", "end" } });
+
+        var put = await controller.PutAiDraft(videoId, draft);
+        Assert.IsType<NoContentResult>(put);
+
+        var get = await controller.GetAiDraft(videoId);
+        var ok = Assert.IsType<OkObjectResult>(get.Result);
+        var back = Assert.IsType<UserAnnotationDto>(ok.Value);
+
+        Assert.Equal(draft.Bars, back.Bars);
+        Assert.Equal(draft.Groups, back.Groups);
+        Assert.Equal(draft.Paras, back.Paras);
+        Assert.Equal(draft.Types, back.Types);
+    }
+
+    [Fact]
+    public async Task PutAiDraft_Twice_OverwritesDraftOnly()
+    {
+        var (db, videoId) = await SeedAsync("memdb_aidraft_overwrite", new SeedExtractor());
+        var controller = new VideosController(db);
+
+        var first = new UserAnnotationDto(
+            new List<List<int>> { new() { 0 } },
+            new Dictionary<string, List<int>>());
+        var second = new UserAnnotationDto(
+            new List<List<int>> { new() { 1, 2 } },
+            new Dictionary<string, List<int>> { { "ay", new() { 1, 2 } } });
+
+        await controller.PutAiDraft(videoId, first);
+        await controller.PutAiDraft(videoId, second);
+
+        var get = await controller.GetAiDraft(videoId);
+        var ok = Assert.IsType<OkObjectResult>(get.Result);
+        var back = Assert.IsType<UserAnnotationDto>(ok.Value);
+        Assert.Equal(second.Bars, back.Bars);
+        Assert.Single(back.Groups);
+    }
+
+    [Fact]
+    public async Task AiDraft_IsSeparateFromSavedAnnotation()
+    {
+        var (db, videoId) = await SeedAsync("memdb_aidraft_separate", new SeedExtractor());
+        var controller = new VideosController(db);
+
+        // User saves their own annotation.
+        var saved = new UserAnnotationDto(
+            new List<List<int>> { new() { 0, 1 } },
+            new Dictionary<string, List<int>>());
+        await controller.PutAnnotation(videoId, saved);
+
+        // A Claude-Code-authored draft is stored separately.
+        var draft = new UserAnnotationDto(
+            new List<List<int>> { new() { 9, 9, 9 } },
+            new Dictionary<string, List<int>> { { "draft", new() { 9 } } });
+        await controller.PutAiDraft(videoId, draft);
+
+        // The draft never overwrote the saved annotation.
+        var annResult = await controller.GetAnnotation(videoId);
+        var annOk = Assert.IsType<OkObjectResult>(annResult.Result);
+        var ann = Assert.IsType<UserAnnotationDto>(annOk.Value);
+        Assert.Equal(saved.Bars, ann.Bars);
+
+        // And the draft round-trips independently.
+        var draftResult = await controller.GetAiDraft(videoId);
+        var draftOk = Assert.IsType<OkObjectResult>(draftResult.Result);
+        var draftBack = Assert.IsType<UserAnnotationDto>(draftOk.Value);
+        Assert.Equal(draft.Bars, draftBack.Bars);
+    }
 }

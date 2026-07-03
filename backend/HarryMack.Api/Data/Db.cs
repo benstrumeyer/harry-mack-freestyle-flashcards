@@ -83,11 +83,14 @@ public sealed class Db(string connectionString)
         CREATE TABLE IF NOT EXISTS user_annotations (
             video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
             bars_json TEXT, groups_json TEXT, paras_json TEXT, types_json TEXT,
+            ai_draft_json TEXT,
             updated_at TEXT DEFAULT (datetime('now')));";
         await cmd.ExecuteNonQueryAsync();
 
         // Add richer-annotation columns to any pre-existing user_annotations table.
-        foreach (var col in new[] { "paras_json", "types_json" })
+        // ai_draft_json holds a Claude-Code-authored suggestion (same shape as the
+        // saved annotation) that NEVER overwrites the user's saved columns.
+        foreach (var col in new[] { "paras_json", "types_json", "ai_draft_json" })
         {
             try
             {

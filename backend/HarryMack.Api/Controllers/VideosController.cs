@@ -217,6 +217,43 @@ public class VideosController : ControllerBase
         return NoContent();
     }
 
+    // GET /api/videos/{id}/ai-draft — a Claude-Code-authored suggestion draft
+    // (same shape as UserAnnotationDto). 204 when no draft has been pushed.
+    // The draft is separate from the user's saved annotation — a suggestion source
+    // the editor can load, never ground truth.
+    [HttpGet("{id}/ai-draft")]
+    public async Task<ActionResult<UserAnnotationDto>> GetAiDraft(string id)
+    {
+        await using var conn = _db.Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT ai_draft_json FROM user_annotations WHERE video_id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        var raw = await cmd.ExecuteScalarAsync();
+        if (raw is not string json || json.Length == 0) return NoContent();
+        var draft = JsonSerializer.Deserialize<UserAnnotationDto>(json);
+        if (draft is null) return NoContent();
+        return Ok(draft);
+    }
+
+    // PUT /api/videos/{id}/ai-draft — store a Claude-Code-authored draft. This only
+    // writes ai_draft_json; it NEVER touches the user's saved bars/groups columns and
+    // does NOT feed the rhyme dictionary. Key-free: the app never calls any LLM API.
+    [HttpPut("{id}/ai-draft")]
+    public async Task<ActionResult> PutAiDraft(string id, [FromBody] UserAnnotationDto body)
+    {
+        await using var conn = _db.Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO user_annotations (video_id, ai_draft_json, updated_at)
+            VALUES ($id, $draft, datetime('now'))
+            ON CONFLICT(video_id) DO UPDATE
+              SET ai_draft_json = $draft, updated_at = datetime('now')";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$draft", JsonSerializer.Serialize(body));
+        await cmd.ExecuteNonQueryAsync();
+        return NoContent();
+    }
+
     // Aggregate the user's saved rhyme groups (keyed by rhyme sound) into
     // rhyme_dictionary + rhyme_dictionary_pairs for the video's artist.
     private static async Task FeedDictionaryAsync(SqliteConnection conn, string videoId,
