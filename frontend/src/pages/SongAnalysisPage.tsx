@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, type VideoAnalysisDto } from '../services/api'
+import { api, type VideoAnalysisDto, type UserAnnotationDto } from '../services/api'
 import AnnotatedTranscript from '../components/AnnotatedTranscript'
+import UserTranscript from '../components/UserTranscript'
 import BarEditor from '../components/BarEditor'
 import DensityPanel from '../components/DensityPanel'
 import DetectorLegend from '../components/DetectorLegend'
@@ -11,9 +12,11 @@ const MONO = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
 export default function SongAnalysisPage() {
   const { videoId } = useParams<{ videoId: string }>()
   const [analysis, setAnalysis] = useState<VideoAnalysisDto | null>(null)
+  const [annotation, setAnnotation] = useState<UserAnnotationDto | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [showMachine, setShowMachine] = useState(false)
 
   useEffect(() => {
     if (!videoId) return
@@ -24,6 +27,15 @@ export default function SongAnalysisPage() {
       .catch(() => setError(true))
       .finally(() => setLoading(false))
   }, [videoId])
+
+  // (Re)load the user's saved annotation — refetch when leaving edit mode so a
+  // just-saved version shows immediately.
+  useEffect(() => {
+    if (!videoId || editing) return
+    api.getAnnotation(videoId).then(setAnnotation).catch(() => setAnnotation(null))
+  }, [videoId, editing])
+
+  const hasUser = !!(annotation && annotation.bars.length > 0)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 45px)', overflow: 'hidden' }}>
@@ -48,6 +60,17 @@ export default function SongAnalysisPage() {
           </span>
         )}
         <span style={{ flex: 1 }} />
+        {!editing && hasUser && (
+          <button
+            onClick={() => setShowMachine((v) => !v)}
+            style={{
+              fontFamily: MONO, fontSize: '0.72rem', padding: '4px 12px', borderRadius: 5, cursor: 'pointer',
+              border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-muted)',
+            }}
+          >
+            {showMachine ? '↩ Your version' : '👁 Machine original'}
+          </button>
+        )}
         <button
           onClick={() => setEditing((v) => !v)}
           style={{
@@ -86,6 +109,9 @@ export default function SongAnalysisPage() {
           )}
           {editing ? (
             <BarEditor analysis={analysis} videoId={videoId!} />
+          ) : hasUser && !showMachine ? (
+            // Your fully-edited version (chatter removed, your rhyme scheme).
+            <UserTranscript analysis={analysis} annotation={annotation!} />
           ) : (
             <>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
