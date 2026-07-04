@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { VideoAnalysisDto } from '../services/api'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import type { VideoAnalysisDto, UserAnnotationDto } from '../services/api'
 import { api } from '../services/api'
 
 const MONO = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
@@ -9,6 +9,8 @@ const TYPE_KEYS: Record<string, string> = { z: 'internal', x: 'slant', c: 'multi
 
 interface Props { analysis: VideoAnalysisDto; videoId: string }
 type Pos = { b: number; w: number }
+// Imperative handle so the parent's "Done editing" can save-then-read deterministically.
+export type BarEditorHandle = { flush: () => Promise<UserAnnotationDto> }
 
 /**
  * One-handed, modeless rap-annotation editor (per council synthesis).
@@ -19,7 +21,7 @@ type Pos = { b: number; w: number }
  * Shift+F join · T verse · Z/X/C = internal/slant/multi type. Arrows/Enter/Backspace
  * also work. Persists bars+verses+groups(by sound)+types per video.
  */
-export default function BarEditor({ analysis, videoId }: Props) {
+const BarEditor = forwardRef<BarEditorHandle, Props>(function BarEditor({ analysis, videoId }, ref) {
   const words = useMemo(() => [...analysis.words].sort((a, b) => a.wordIndex - b.wordIndex), [analysis.words])
   const meta = useMemo(() => {
     const m = new Map<number, { text: string; start: number }>()
@@ -74,18 +76,45 @@ export default function BarEditor({ analysis, videoId }: Props) {
     return () => { cancelled = true }
   }, [videoId, autoSegment])
 
-  // Auto-save on exit ("Done editing" / navigate away) so unsaved edits aren't lost.
+  // Single source of truth for "what's in the editor right now", read by every save path.
   const latest = useRef({ bars, groups, paras, types, dirty })
   latest.current = { bars, groups, paras, types, dirty }
-  useEffect(() => () => {
+  const buildDto = (): UserAnnotationDto => {
     const s = latest.current
-    if (s.dirty) {
-      api.putAnnotation(videoId, {
-        bars: s.bars, groups: s.groups, paras: s.paras,
-        types: Object.fromEntries(Object.entries(s.types).map(([k, v]) => [String(k), v])),
-      }).catch(() => {})
+    return {
+      bars: s.bars, groups: s.groups, paras: s.paras,
+      types: Object.fromEntries(Object.entries(s.types).map(([k, v]) => [String(k), v])),
     }
-  }, [videoId])
+  }
+
+  // Imperative save the parent awaits on "Done editing": persist (if dirty) and return
+  // the exact DTO so the read view renders it directly — no racing refetch.
+  useImperativeHandle(ref, () => ({
+    flush: async () => {
+      const dto = buildDto()
+      if (latest.current.dirty) {
+        await api.putAnnotation(videoId, dto)
+        setDirty(false); setStatus('saved ✓')
+      }
+      return dto
+    },
+  }), [videoId])
+
+  // Debounced autosave: persist ~800ms after you stop editing, so work is never
+  // "not quick enough" and survives navigating away or closing the tab.
+  useEffect(() => {
+    if (!dirty) return
+    const t = setTimeout(() => {
+      api.putAnnotation(videoId, buildDto())
+        .then(() => { setDirty(false); setStatus('saved ✓') })
+        .catch(() => {})
+    }, 800)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, bars, groups, paras, types, videoId])
+
+  // Backstop: on unmount, flush any still-dirty edits (e.g. hard navigation before debounce fires).
+  useEffect(() => () => { if (latest.current.dirty) api.putAnnotation(videoId, buildDto()).catch(() => {}) }, [videoId])
 
   // family display order (first appearance) → color + letter + sound label
   const families = useMemo(() => {
@@ -385,7 +414,9 @@ export default function BarEditor({ analysis, videoId }: Props) {
       </div>
     </div>
   )
-}
+})
+
+export default BarEditor
 
 function btn(active: boolean): React.CSSProperties {
   return {
