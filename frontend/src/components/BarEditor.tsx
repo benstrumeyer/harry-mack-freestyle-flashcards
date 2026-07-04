@@ -74,6 +74,19 @@ export default function BarEditor({ analysis, videoId }: Props) {
     return () => { cancelled = true }
   }, [videoId, autoSegment])
 
+  // Auto-save on exit ("Done editing" / navigate away) so unsaved edits aren't lost.
+  const latest = useRef({ bars, groups, paras, types, dirty })
+  latest.current = { bars, groups, paras, types, dirty }
+  useEffect(() => () => {
+    const s = latest.current
+    if (s.dirty) {
+      api.putAnnotation(videoId, {
+        bars: s.bars, groups: s.groups, paras: s.paras,
+        types: Object.fromEntries(Object.entries(s.types).map(([k, v]) => [String(k), v])),
+      }).catch(() => {})
+    }
+  }, [videoId])
+
   // family display order (first appearance) → color + letter + sound label
   const families = useMemo(() => {
     const firstIdx = (wis: number[]) => (wis.length ? Math.min(...wis) : Infinity)
