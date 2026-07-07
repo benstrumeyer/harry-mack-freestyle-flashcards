@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { VideoAnalysisDto } from '../services/api'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import type { VideoAnalysisDto, UserAnnotationDto } from '../services/api'
 import { api } from '../services/api'
 
 const MONO = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
@@ -9,6 +9,8 @@ const TYPE_KEYS: Record<string, string> = { z: 'internal', x: 'slant', c: 'multi
 
 interface Props { analysis: VideoAnalysisDto; videoId: string }
 type Pos = { b: number; w: number }
+// Imperative handle so the parent's "Done editing" can save-then-read deterministically.
+export type BarEditorHandle = { flush: () => Promise<UserAnnotationDto> }
 
 /**
  * One-handed, modeless rap-annotation editor (per council synthesis).
@@ -19,7 +21,7 @@ type Pos = { b: number; w: number }
  * Shift+F join · T verse · Z/X/C = internal/slant/multi type. Arrows/Enter/Backspace
  * also work. Persists bars+verses+groups(by sound)+types per video.
  */
-export default function BarEditor({ analysis, videoId }: Props) {
+const BarEditor = forwardRef<BarEditorHandle, Props>(function BarEditor({ analysis, videoId }, ref) {
   const words = useMemo(() => [...analysis.words].sort((a, b) => a.wordIndex - b.wordIndex), [analysis.words])
   const meta = useMemo(() => {
     const m = new Map<number, { text: string; start: number }>()
@@ -41,6 +43,7 @@ export default function BarEditor({ analysis, videoId }: Props) {
   const [groups, setGroups] = useState<Record<string, number[]>>({}) // key = rhyme sound (or u#)
   const [types, setTypes] = useState<Record<number, string>>({})
   const [cur, setCur] = useState<Pos>({ b: 0, w: 0 })
+  const [anchor, setAnchor] = useState<Pos | null>(null) // range-select anchor (Shift+move)
   const [active, setActive] = useState<string | null>(null) // active family key
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -73,6 +76,46 @@ export default function BarEditor({ analysis, videoId }: Props) {
     return () => { cancelled = true }
   }, [videoId, autoSegment])
 
+  // Single source of truth for "what's in the editor right now", read by every save path.
+  const latest = useRef({ bars, groups, paras, types, dirty })
+  latest.current = { bars, groups, paras, types, dirty }
+  const buildDto = (): UserAnnotationDto => {
+    const s = latest.current
+    return {
+      bars: s.bars, groups: s.groups, paras: s.paras,
+      types: Object.fromEntries(Object.entries(s.types).map(([k, v]) => [String(k), v])),
+    }
+  }
+
+  // Imperative save the parent awaits on "Done editing": persist (if dirty) and return
+  // the exact DTO so the read view renders it directly — no racing refetch.
+  useImperativeHandle(ref, () => ({
+    flush: async () => {
+      const dto = buildDto()
+      if (latest.current.dirty) {
+        await api.putAnnotation(videoId, dto)
+        setDirty(false); setStatus('saved ✓')
+      }
+      return dto
+    },
+  }), [videoId])
+
+  // Debounced autosave: persist ~800ms after you stop editing, so work is never
+  // "not quick enough" and survives navigating away or closing the tab.
+  useEffect(() => {
+    if (!dirty) return
+    const t = setTimeout(() => {
+      api.putAnnotation(videoId, buildDto())
+        .then(() => { setDirty(false); setStatus('saved ✓') })
+        .catch(() => {})
+    }, 800)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, bars, groups, paras, types, videoId])
+
+  // Backstop: on unmount, flush any still-dirty edits (e.g. hard navigation before debounce fires).
+  useEffect(() => () => { if (latest.current.dirty) api.putAnnotation(videoId, buildDto()).catch(() => {}) }, [videoId])
+
   // family display order (first appearance) → color + letter + sound label
   const families = useMemo(() => {
     const firstIdx = (wis: number[]) => (wis.length ? Math.min(...wis) : Infinity)
@@ -93,6 +136,26 @@ export default function BarEditor({ analysis, videoId }: Props) {
   const effType = (wi: number) => types[wi] ?? (barLast.has(wi) ? 'end' : null)
   const wiAt = (p: Pos): number | null => bars[p.b]?.[p.w] ?? null
   const curWi = wiAt(cur)
+
+  // ---- range selection (Shift+move) ----
+  const flat = useMemo(() => {
+    const f: { b: number; w: number; wi: number }[] = []
+    bars.forEach((bar, b) => bar.forEach((wi, w) => f.push({ b, w, wi })))
+    return f
+  }, [bars])
+  const posIdx = (p: Pos) => flat.findIndex((x) => x.b === p.b && x.w === p.w)
+  const selRange = useMemo(() => {
+    if (!anchor) return null
+    const i = posIdx(anchor), j = posIdx(cur)
+    if (i < 0 || j < 0) return null
+    return i <= j ? { lo: i, hi: j } : { lo: j, hi: i }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchor, cur, flat])
+  const inSel = (b: number, w: number) => {
+    if (!selRange) return false
+    const idx = flat.findIndex((x) => x.b === b && x.w === w)
+    return idx >= selRange.lo && idx <= selRange.hi
+  }
 
   // ---- navigation ----
   const clampW = (b: number, w: number) => Math.max(0, Math.min(w, (bars[b]?.length ?? 1) - 1))
@@ -186,6 +249,22 @@ export default function BarEditor({ analysis, videoId }: Props) {
     purgeWords(wis)
     setCur((c) => ({ b: Math.max(0, Math.min(c.b, bars.length - 2)), w: 0 })); setDirty(true)
   }
+  // Delete a whole selected range (e.g. a people-talking segment) across bars.
+  function deleteRange() {
+    if (!selRange) return
+    const remove = new Set(flat.slice(selRange.lo, selRange.hi + 1).map((x) => x.wi))
+    setBars((prev) => {
+      const survivors: number[][] = []
+      const remap: number[] = []
+      prev.forEach((bar, oi) => {
+        const nb = bar.filter((wi) => !remove.has(wi))
+        if (nb.length) { remap[oi] = survivors.length; survivors.push(nb) } else remap[oi] = -1
+      })
+      setParas((p) => p.map((oi) => remap[oi]).filter((x): x is number => x != null && x > 0))
+      return survivors
+    })
+    purgeWords(remove); setAnchor(null); setCur({ b: 0, w: 0 }); setDirty(true)
+  }
 
   function onKeyDown(e: React.KeyboardEvent) {
     const k = e.key
@@ -194,7 +273,9 @@ export default function BarEditor({ analysis, videoId }: Props) {
       ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down',
       a: 'left', d: 'right', w: 'up', s: 'down',
     }
-    if (nav[k]) { e.preventDefault(); move(nav[k]!); return }
+    if (nav[k]) { e.preventDefault(); if (e.shiftKey) setAnchor((a) => a ?? cur); else setAnchor(null); move(nav[k]!); return }
+    if (k === 'Escape') { e.preventDefault(); setAnchor(null); return }
+    if ((k === 'Delete' || k === 'Backspace') && selRange) { e.preventDefault(); deleteRange(); return }
     if (k === ' ') { e.preventDefault(); groupCursor(); return }
     if (k === 'q') { e.preventDefault(); cycleFamily(-1); return }
     if (k === 'e') { e.preventDefault(); cycleFamily(1); return }
@@ -244,13 +325,13 @@ export default function BarEditor({ analysis, videoId }: Props) {
   }
   const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 
-  function wordStyle(wi: number, isCur: boolean): React.CSSProperties {
+  function wordStyle(wi: number, isCur: boolean, sel: boolean): React.CSSProperties {
     const gid = gidOfWord.get(wi); const t = effType(wi)
     const hue = gid != null ? families.info.get(gid)?.hue ?? null : null
     const opener = t === 'opener'
     return {
       cursor: 'pointer', padding: '0 3px', borderRadius: 3,
-      background: hue != null ? `hsl(${hue} 75% 50% / 0.42)` : (opener ? 'rgba(120,180,255,0.14)' : (isCur ? 'rgba(255,255,255,0.08)' : undefined)),
+      background: sel ? 'rgba(120,170,255,0.45)' : (hue != null ? `hsl(${hue} 75% 50% / 0.42)` : (opener ? 'rgba(120,180,255,0.14)' : (isCur ? 'rgba(255,255,255,0.08)' : undefined))),
       fontWeight: t === 'end' ? 700 : 400, fontStyle: t === 'slant' ? 'italic' : undefined,
       textDecoration: t === 'internal' || t === 'multi' ? 'underline' : undefined,
       textDecorationStyle: t === 'multi' ? 'double' : t === 'internal' ? 'dotted' : undefined, textUnderlineOffset: '2px',
@@ -264,7 +345,7 @@ export default function BarEditor({ analysis, videoId }: Props) {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: '0.74rem', color: 'var(--color-muted)' }}>
-          <kbd>WASD</kbd> move · <kbd>Space</kbd> rhyme · <kbd>Q/E</kbd> family · <kbd>R</kbd> slant · <kbd>F</kbd> split · <kbd>T</kbd> verse · <kbd>O</kbd> opener · <kbd>G</kbd> del word / <kbd>Shift+G</kbd> del bar · <kbd>Z/X/C</kbd> internal/slant/multi
+          <kbd>WASD</kbd> move · <kbd>Shift+move</kbd> select · <kbd>Del</kbd> delete selection · <kbd>Space</kbd> rhyme · <kbd>Q/E</kbd> family · <kbd>R</kbd> slant · <kbd>F</kbd> split · <kbd>T</kbd> verse · <kbd>O</kbd> opener · <kbd>G</kbd> del word / <kbd>Shift+G</kbd> del bar · <kbd>Z/X/C</kbd> internal/slant/multi
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: '0.72rem', color: 'var(--color-muted)' }}>{status}</span>
@@ -320,7 +401,7 @@ export default function BarEditor({ analysis, videoId }: Props) {
                   return (
                     <span key={wi}>
                       {wIdx > 0 && ' '}
-                      <span onClick={() => onWordClick(bi, wIdx, wi)} style={wordStyle(wi, cur.b === bi && cur.w === wIdx)}>
+                      <span onClick={() => onWordClick(bi, wIdx, wi)} style={wordStyle(wi, cur.b === bi && cur.w === wIdx, inSel(bi, wIdx))}>
                         {meta.get(wi)?.text ?? '?'}{letter && <sub style={{ fontFamily: MONO, fontSize: '0.6em', opacity: 0.8 }}>{letter}</sub>}
                       </span>
                     </span>
@@ -333,7 +414,9 @@ export default function BarEditor({ analysis, videoId }: Props) {
       </div>
     </div>
   )
-}
+})
+
+export default BarEditor
 
 function btn(active: boolean): React.CSSProperties {
   return {
